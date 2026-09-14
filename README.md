@@ -1,6 +1,6 @@
 # CMPE 273 Distributed Systems Project Ideas
 
-This repository contains three proposed project ideas for **CMPE 273: Enterprise Distributed Systems** at San José State University.
+This repository contains three proposed project ideas for **CMPE 273: Enterprise Distributed Systems**.
 
 The projects will use advanced backend and distributed-systems technologies, including **Apache Kafka, Docker, Kubernetes, REST/gRPC, Redis, distributed databases, monitoring, tracing, and fault-tolerance patterns**.
 
@@ -103,6 +103,17 @@ DocuSphere is a distributed AI platform that allows users to upload documents an
 
 The system separates document uploading, text extraction, document chunking, embedding generation, vector search, and retrieval-augmented generation into independent services.
 
+The primary focus will be:
+
+- Distributed document-processing pipelines
+- Kafka-based asynchronous communication
+- Worker replication
+- Kubernetes-based scaling
+- Fault recovery
+- Distributed storage
+- Monitoring and tracing
+- Retrieval-augmented generation
+
 ### Core Services
 
 - Upload and Document Metadata Service
@@ -140,24 +151,8 @@ Idempotent processing will prevent the same document from being processed more t
 8. One worker pod is stopped while processing.
 9. Kubernetes restarts the failed pod or another replica continues the job.
 
-# Recommended Project
 
-**DocuSphere: Fault-Tolerant Distributed AI Document Processing and Retrieval System** is the recommended project because it provides a strong use case for Kafka, Docker, Kubernetes, replicated workers, asynchronous pipelines, and fault-tolerant processing.
-
-The primary focus will be:
-
-- Distributed document-processing pipelines
-- Kafka-based asynchronous communication
-- Worker replication
-- Kubernetes-based scaling
-- Fault recovery
-- Distributed storage
-- Monitoring and tracing
-- Retrieval-augmented generation
-
-To keep the project manageable, the initial implementation will include the Upload, Text Processing, Embedding, Vector Search, RAG, and Notification Services.
-
-# Expected Deliverables
+# Expected Deliverables for project
 
 - Source code for all microservices
 - Dockerfiles for each service

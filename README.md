@@ -2,19 +2,22 @@
 
 ## Abstract
 
-Enterprise customer-support platforms keep thousands of live conversations open at the same time. In most systems, a single server crash, network partition, or rolling deployment can disconnect customers, lose messages, and force them to repeat their problem. **EngageHub** is a proposed distributed, enterprise-grade customer-engagement platform, inspired by products such as TouchCommerce. It combines a hybrid workforce of **eight specialized virtual AI agents and two human support agents** to provide real-time chat, product assistance, order tracking, recommendations, notifications, and intelligent escalation. EngageHub will be built as a set of independently deployable microservices. **Apache Kafka** will carry asynchronous, event-driven communication between them, and they will run in **Docker** containers orchestrated by **Kubernetes**. The project's core challenge is **Global Session State Reconciliation and Reliable Live-Chat Migration During Failures**. Active session state will be replicated in a **Redis Cluster**. Every chat message will be stored as an ordered, durable Kafka event, partitioned by conversation ID. When a Chat Service pod fails, the customer's WebSocket connection will move to a healthy pod. That pod will restore the session from Redis and replay missing events from Kafka, and it will use sequence numbers and idempotency keys to guarantee that **no acknowledged message is lost and no duplicate message is shown to the user**.
+Enterprise customer-support platforms keep thousands of live conversations open at the same time. In most systems, a single server crash, network partition, or rolling deployment can disconnect customers, lose messages, and force them to repeat their problem. **EngageHub** is a proposed distributed, enterprise-grade customer-engagement platform, inspired by products such as TouchCommerce. It combines **eight specialized virtual agents, an AI supervisor and routing service, and two human support agents** to provide real-time chat, product assistance, order tracking, recommendations, notifications, and intelligent escalation. EngageHub will be built as a set of independently deployable microservices. **Apache Kafka** will carry asynchronous, event-driven communication between them, and they will run in **Docker** containers orchestrated by **Kubernetes**. The project's core challenge is **Global Session State Reconciliation and Reliable Live-Chat Migration During Failures**. Active session state will be replicated in a **Redis Cluster**. Every chat message will be stored as an ordered, durable Kafka event, partitioned by conversation ID. When a Chat Service pod fails, the customer's WebSocket connection will move to a healthy pod. That pod will restore the session from Redis and replay missing events from Kafka, and it will use sequence numbers and idempotency keys so that **acknowledged messages are not lost and duplicate messages are not shown to the user**.
 
 ## Business Value
 
-- **Better customer support:** Customers will get instant help 24/7 from specialized virtual agents for products, orders, returns, billing, technical issues, FAQs, and complaints. Human agents will be reserved for complex, sensitive, VIP, or frustrated customers.
-- **Lower response time:** The Supervisor and Routing Agent will send each question directly to the right specialized agent. This avoids generic bot responses and long human queues.
-- **Scalable support operations:** Kubernetes horizontal scaling will let the platform absorb traffic spikes, such as holiday sales or product launches, without hiring more staff or overloading servers.
-- **No lost conversations during failures:** Customers will not see a dropped chat when a server crashes or a new version is deployed. Their conversation, context, and agent assignment will continue on another pod with no lost or repeated messages.
-- **Smart AI-to-human handoff:** Sentiment and frustration detection, together with AI-generated conversation summaries, will help human agents understand a case immediately, without asking the customer to repeat it.
-- **Higher customer satisfaction and retention:** A reliable, fast, and context-aware support experience builds trust and reduces abandoned carts and churn.
-- **Multi-tenant SaaS potential:** One platform deployment can serve multiple businesses, which makes EngageHub a realistic, startup-worthy product.
+- **24/7 customer support:** Specialized AI agents can handle product questions, order tracking, returns, billing, technical support, FAQs, complaints, and customer feedback at any time.
+- **Faster issue resolution:** Intelligent routing directs each customer request to the appropriate AI agent or human support agent, reducing response time and unnecessary transfers.
+- **Reduced operational cost:** AI agents handle routine questions, allowing human agents to focus on complex, sensitive, or escalated cases.
+- **Scalable customer service:** Kubernetes can automatically scale chat and support services during traffic increases such as product launches or holiday sales.
+- **Reliable customer conversations:** Replicated session state, Kafka event storage, and message replay allow conversations to recover when a service or pod fails.
+- **Better AI-to-human handoff:** Sentiment detection and conversation summaries give human agents the necessary context without requiring customers to repeat their issue.
+- **Improved customer satisfaction:** Faster responses, reliable conversations, and better routing can reduce abandoned chats and improve customer retention.
+- **Multi-tenant business potential:** The platform can support multiple businesses using shared infrastructure while keeping their customer and conversation data logically separated.
 
-**Why reliable session recovery matters:** For an enterprise, every dropped conversation can mean a lost sale, an unresolved complaint, or a compliance risk. Most chat platforms treat WebSocket connections as disposable, so any pod failure or deployment interrupts customers. EngageHub treats each live conversation as **durable, recoverable state**. This allows zero-downtime deployments and fault-tolerant operation, which is a key differentiator for large-scale customer-engagement businesses.
+The main business value of EngageHub is reliable, scalable customer engagement. Even when a service fails, the platform is designed to preserve conversation context and continue supporting the customer.
+
+**Why reliable session recovery matters:** For an enterprise, every dropped conversation can mean a lost sale or an unresolved complaint. Most chat platforms treat WebSocket connections as disposable, so any pod failure or deployment interrupts customers. EngageHub treats each live conversation as **durable, recoverable state**. This supports fault-tolerant operation and reduces the impact of service failures during deployments or unexpected crashes.
 
 ## Proposed Architecture Diagram
 
@@ -24,7 +27,7 @@ flowchart TB
     HumanUI["Human Agent Console"]
 
     subgraph K8S["Kubernetes Cluster (Docker containers)"]
-        Gateway["API Gateway<br/>NGINX / Kubernetes Ingress"]
+        Gateway["API Gateway<br/>NGINX Ingress"]
         Auth["Authentication Service"]
         Tenant["Customer and Tenant Service"]
 
@@ -35,7 +38,7 @@ flowchart TB
         end
 
         Session["Session Management Service"]
-        Orch["Virtual Agent Orchestrator"]
+        Orch["Virtual Agent Orchestrator<br/>AI Supervisor and Routing"]
 
         subgraph VA["8 Specialized Virtual Agents"]
             A1["Product Advisor"]
@@ -45,7 +48,7 @@ flowchart TB
             A5["Technical Support"]
             A6["FAQ"]
             A7["Complaint Management"]
-            A8["Supervisor and Routing"]
+            A8["Customer Feedback"]
         end
 
         Queue["Human Agent and Queue Service<br/>(2 Human Agents)"]
@@ -57,7 +60,7 @@ flowchart TB
 
         Redis[("Redis Cluster<br/>Replicated Session State")]
         Kafka[["Apache Kafka Cluster<br/>Partitioned by Conversation ID"]]
-        DB[("PostgreSQL / MongoDB")]
+        DB[("PostgreSQL")]
     end
 
     Client -->|"HTTPS / WebSocket"| Gateway
@@ -93,7 +96,7 @@ flowchart TB
 1. Customers connect through the **API Gateway**, which authenticates requests and routes WebSocket connections to one of several replicated **Chat Pods**.
 2. Each chat message will receive a unique message ID, conversation ID, sequence number, timestamp, tenant ID, and correlation ID. It will be published to **Kafka** using the conversation ID as the partition key, which preserves per-conversation ordering.
 3. The **Session Management Service** will store live session state in a **Redis Cluster**: assigned agent, workflow state, last acknowledged message ID, unacknowledged messages, and typing status.
-4. The **Virtual Agent Orchestrator** will route requests to the right specialized agent, coordinate multi-agent collaboration, and publish escalation events when a human agent is needed.
+4. The **Virtual Agent Orchestrator**, acting as the AI supervisor and routing service, will route requests to the right specialized agent, coordinate multi-agent collaboration, and publish escalation events when a human agent is needed.
 5. **Failure recovery:** If a Chat Pod fails, Kubernetes will restart it and the gateway will reconnect the client to a healthy pod. The new pod will restore the session from Redis, read the last acknowledged message ID, and replay only the missing events from Kafka. Duplicates will be removed using message IDs and idempotency keys.
 6. **Notification, Analytics, and Audit** services will consume Kafka events independently through separate consumer groups, so a slow or failed consumer will never block live chat.
 
@@ -101,21 +104,19 @@ flowchart TB
 
 | Technology | Purpose |
 |---|---|
-| **React** | Frontend for the customer chat application, the human agent console, and the analytics dashboard |
-| **FastAPI / Spring Boot** | Backend frameworks for building independent microservices |
-| **REST and gRPC** | REST for external client APIs; gRPC for fast, typed, synchronous service-to-service calls |
-| **WebSockets** | Real-time, bidirectional chat between customers, virtual agents, and human agents |
-| **Apache Kafka** | Durable, ordered event streaming for chat messages, escalations, notifications, analytics, and audit logs. The conversation ID is the partition key for ordering, consumer groups provide parallel processing, and event retention enables message replay after failures |
-| **Redis Cluster** | Replicated, low-latency storage for active session state, agent availability, and idempotency keys, which enables chat migration between pods |
-| **PostgreSQL / MongoDB** | Persistent storage for customers, tenants, products, orders, conversation history, and audit records |
-| **Docker** | Packages each microservice with its dependencies into a portable, consistent container image |
-| **Kubernetes** | Orchestrates containers with Deployments, Services, rolling updates, liveness/readiness probes, self-healing pod restarts, and Horizontal Pod Autoscaling |
-| **NGINX / Kubernetes Ingress** | API gateway for routing, load balancing, TLS termination, and WebSocket connection handling |
-| **Prometheus** | Collects metrics such as message latency, active sessions, Kafka consumer lag, and pod health |
-| **Grafana** | Dashboards for visualizing system health, agent workload, and failure-recovery behavior |
-| **OpenTelemetry** | Instruments services to generate traces, using correlation IDs across synchronous and asynchronous calls |
-| **Jaeger** | Visualizes distributed traces to debug latency and failures across microservices |
-| **GitHub Actions** | Continuous integration: automated builds, tests, and Docker image creation |
+| **React** | Frontend for the customer chat application, human agent console, and analytics dashboard |
+| **FastAPI** | Backend framework for implementing the microservices |
+| **REST and gRPC** | REST for client-facing APIs and gRPC for typed service-to-service communication |
+| **WebSockets** | Real-time, bidirectional communication for live customer support chats |
+| **Apache Kafka** | Durable event streaming for chat messages, escalations, notifications, analytics, and audit events. The conversation ID is used as the partition key to preserve message order, and retained events enable message replay after failures |
+| **Redis Cluster** | Fast, replicated storage for active session state, agent assignment, and idempotency keys |
+| **PostgreSQL** | Persistent storage for customers, tenants, products, orders, conversations, and audit records |
+| **Docker** | Containerizes each microservice and its dependencies |
+| **Kubernetes** | Provides service discovery, deployment, scaling, rolling updates, and automatic pod recovery |
+| **NGINX Ingress** | Routes HTTP and WebSocket traffic to the appropriate services |
+| **Prometheus and Grafana** | Collects and visualizes system metrics such as latency, active sessions, consumer lag, and pod health |
+| **OpenTelemetry and Jaeger** | Provides distributed tracing across microservices and Kafka-based workflows |
+| **GitHub Actions** | Automates testing, building, and Docker image creation through continuous integration |
 
 ### Distributed-Systems Patterns Used
 

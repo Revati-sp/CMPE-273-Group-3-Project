@@ -1,0 +1,103 @@
+# EngageHub API gateway. ${DNS_RESOLVER} is substituted when the container starts.
+#
+# Upstreams are resolved at request time through a variable. A service that is down
+# therefore does not stop the gateway from booting, and replicas added or replaced
+# by scaling or a pod restart are picked up within seconds. This is what lets a
+# reconnecting WebSocket client land on a healthy chat pod.
+resolver ${DNS_RESOLVER} valid=3s ipv6=off;
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+map $http_x_correlation_id $correlation_id {
+    default $http_x_correlation_id;
+    ''      $request_id;
+}
+
+map $api_name $api_upstream {
+    default      "";
+    auth         auth-service;
+    tenant       tenant-service;
+    customer     customer-service;
+    chat         chat-service;
+    session      session-service;
+    human        human-agent-service;
+    orchestrator agent-orchestrator;
+    product      product-service;
+    order        order-service;
+    notification notification-service;
+    analytics    analytics-service;
+    audit        audit-service;
+}
+
+log_format engagehub_json escape=json
+    '{"timestamp":"$time_iso8601","service":"api-gateway","method":"$request_method",'
+    '"path":"$uri","status":$status,"duration":$request_time,"upstream":"$upstream_addr",'
+    '"correlation_id":"$correlation_id","traceparent":"$http_traceparent"}';
+
+limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=ws_limit:10m;
+
+server {
+    listen 8080;
+    access_log /dev/stdout engagehub_json;
+    client_max_body_size 1m;
+
+    add_header X-Correlation-ID $correlation_id always;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Correlation-ID $correlation_id;
+    proxy_set_header traceparent $http_traceparent;
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 30s;
+    proxy_next_upstream error timeout;
+    proxy_next_upstream_tries 3;
+
+    location = /healthz {
+        access_log off;
+        default_type application/json;
+        return 200 '{"status":"ok","service":"api-gateway"}';
+    }
+
+    # Operational endpoints are for Prometheus and Kubernetes, not the internet.
+    location ~ ^/api/[a-z]+/(metrics|healthz|readyz|docs|redoc|openapi\.json)$ {
+        return 404;
+    }
+
+    location ~ ^/api/auth/ {
+        limit_req zone=auth_limit burst=40 nodelay;
+        set $auth_upstream auth-service;
+        rewrite ^/api/auth/(.*)$ /$1 break;
+        proxy_pass http://$auth_upstream:8000;
+    }
+
+    location ~ ^/api/(?<api_name>[a-z]+)/ {
+        if ($api_upstream = "") {
+            return 404;
+        }
+        # rewrite keeps the path re-encoded, which prevents header injection through %0a.
+        rewrite ^/api/[a-z]+/(.*)$ /$1 break;
+        proxy_pass http://$api_upstream:8000;
+    }
+
+    location = /ws {
+        limit_conn ws_limit 200;
+        set $chat_upstream chat-service;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_pass http://$chat_upstream:8000;
+    }
+
+    location / {
+        set $frontend_upstream frontend;
+        proxy_pass http://$frontend_upstream:8081;
+    }
+}

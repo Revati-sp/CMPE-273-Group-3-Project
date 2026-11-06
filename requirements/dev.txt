@@ -1,0 +1,12 @@
+aiosqlite==0.22.1
+fakeredis==2.40.0
+grpcio-tools==1.85.1
+iniconfig==2.3.1
+lupa==2.8
+pluggy==1.7.0
+Pygments==2.21.0
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+ruff==0.17.4
+setuptools==84.2.1
+sortedcontainers==2.4.0

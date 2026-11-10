@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package engagehub.session.v1;
+
+// Internal API for reading durable conversation history. Only session-service
+// reads PostgreSQL and the Kafka tail directly; everything else calls this.
+service SessionHistory {
+  // Messages above after_seq, merged from the transcript and the Kafka tail.
+  rpc GetMessagesAfter(GetMessagesRequest) returns (GetMessagesResponse);
+  // Rebuilds hot session state in Redis after it was lost.
+  rpc RestoreSession(RestoreSessionRequest) returns (RestoreSessionResponse);
+}
+
+message GetMessagesRequest {
+  string tenant_id = 1;
+  string conversation_id = 2;
+  int64 after_seq = 3;
+  int32 limit = 4;
+}
+
+message GetMessagesResponse {
+  // Each entry is an EventEnvelope as JSON, so the schema has one source of truth.
+  repeated string envelopes = 1;
+}
+
+message RestoreSessionRequest {
+  string tenant_id = 1;
+  string conversation_id = 2;
+}
+
+message RestoreSessionResponse {
+  bool found = 1;
+  int64 head_seq = 2;
+}

@@ -1,0 +1,341 @@
+# EngageHub local stack. Run `make up`. Ports bind to localhost only.
+name: engagehub
+
+x-service-env: &service-env
+  JWT_SECRET: ${JWT_SECRET:?Run "make env" to create .env}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  OTEL_ENABLED: ${OTEL_ENABLED:-true}
+  OTEL_ENDPOINT: http://jaeger:4318/v1/traces
+  SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+  DEMO_PASSWORD: ${DEMO_PASSWORD:-engagehub-demo}
+  LLM_PROVIDER: ${LLM_PROVIDER:-rules}
+  KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  REDIS_MODE: cluster
+  REDIS_NODES: redis-1:6379,redis-2:6379,redis-3:6379,redis-4:6379,redis-5:6379,redis-6:6379
+
+x-service: &service
+  restart: unless-stopped
+  stop_grace_period: 20s
+  depends_on: &service-deps
+    kafka-init: { condition: service_completed_successfully }
+    redis-init: { condition: service_completed_successfully }
+    postgres: { condition: service_healthy }
+
+x-kafka: &kafka
+  image: apache/kafka:3.9.1
+  restart: unless-stopped
+  healthcheck:
+    # A plain port probe: the Kafka CLI would start a whole JVM on every check.
+    test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
+    interval: 15s
+    timeout: 5s
+    retries: 10
+    start_period: 30s
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: RW5nYWdlSHViS2Fma2EwMQ
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_HEAP_OPTS: -Xms256m -Xmx384m
+
+x-redis: &redis
+  image: redis:7.4-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+
+x-virtual-agent: &virtual-agent
+  <<: *service
+  image: engagehub/virtual-agent-service:local
+  depends_on:
+    <<: *service-deps
+
+services:
+  # ---------- Infrastructure ----------
+  kafka-1:
+    <<: *kafka
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 1, KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-1:9092" }
+    volumes: [kafka-1:/var/lib/kafka/data]
+  kafka-2:
+    <<: *kafka
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 2, KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-2:9092" }
+    volumes: [kafka-2:/var/lib/kafka/data]
+  kafka-3:
+    <<: *kafka
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 3, KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-3:9092" }
+    volumes: [kafka-3:/var/lib/kafka/data]
+
+  kafka-init:
+    image: engagehub/session-service:local
+    build: { context: ., dockerfile: services/session-service/Dockerfile }
+    command: ["python", "-m", "engagehub_common.messaging.provision"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+    healthcheck: { disable: true }
+    depends_on: [kafka-1, kafka-2, kafka-3]
+    restart: "no"
+
+  redis-1:
+    <<: *redis
+    command: >-
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 3000 --cluster-require-full-coverage no
+      --cluster-preferred-endpoint-type hostname --appendonly yes --appendfsync everysec
+      --maxmemory 128mb --maxmemory-policy noeviction --cluster-announce-hostname redis-1
+    volumes: [redis-1:/data]
+  redis-2:
+    <<: *redis
+    command: >-
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 3000 --cluster-require-full-coverage no
+      --cluster-preferred-endpoint-type hostname --appendonly yes --appendfsync everysec
+      --maxmemory 128mb --maxmemory-policy noeviction --cluster-announce-hostname redis-2
+    volumes: [redis-2:/data]
+  redis-3:
+    <<: *redis
+    command: >-
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 3000 --cluster-require-full-coverage no
+      --cluster-preferred-endpoint-type hostname --appendonly yes --appendfsync everysec
+      --maxmemory 128mb --maxmemory-policy noeviction --cluster-announce-hostname redis-3
+    volumes: [redis-3:/data]
+  redis-4:
+    <<: *redis
+    command: >-
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 3000 --cluster-require-full-coverage no
+      --cluster-preferred-endpoint-type hostname --appendonly yes --appendfsync everysec
+      --maxmemory 128mb --maxmemory-policy noeviction --cluster-announce-hostname redis-4
+    volumes: [redis-4:/data]
+  redis-5:
+    <<: *redis
+    command: >-
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 3000 --cluster-require-full-coverage no
+      --cluster-preferred-endpoint-type hostname --appendonly yes --appendfsync everysec
+      --maxmemory 128mb --maxmemory-policy noeviction --cluster-announce-hostname redis-5
+    volumes: [redis-5:/data]
+  redis-6:
+    <<: *redis
+    command: >-
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 3000 --cluster-require-full-coverage no
+      --cluster-preferred-endpoint-type hostname --appendonly yes --appendfsync everysec
+      --maxmemory 128mb --maxmemory-policy noeviction --cluster-announce-hostname redis-6
+    volumes: [redis-6:/data]
+
+  redis-init:
+    image: redis:7.4-alpine
+    entrypoint: ["/bin/sh", "/init-cluster.sh"]
+    volumes: ["./deploy/redis/init-cluster.sh:/init-cluster.sh:ro"]
+    depends_on: [redis-1, redis-2, redis-3, redis-4, redis-5, redis-6]
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-engagehub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run "make env" to create .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./deploy/postgres/init-databases.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d eh_audit"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------- Application services ----------
+  api-gateway:
+    image: engagehub/api-gateway:local
+    build: { context: ., dockerfile: services/api-gateway/Dockerfile }
+    restart: unless-stopped
+    ports: ["127.0.0.1:${GATEWAY_PORT:-18080}:8080"]
+
+  frontend:
+    image: engagehub/frontend:local
+    build: { context: ., dockerfile: frontend/Dockerfile }
+    restart: unless-stopped
+
+  auth-service:
+    <<: *service
+    image: engagehub/auth-service:local
+    build: { context: ., dockerfile: services/auth-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_auth
+
+  tenant-service:
+    <<: *service
+    image: engagehub/tenant-service:local
+    build: { context: ., dockerfile: services/tenant-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_tenant
+
+  customer-service:
+    <<: *service
+    image: engagehub/customer-service:local
+    build: { context: ., dockerfile: services/customer-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_customer
+
+  chat-service:
+    <<: *service
+    image: engagehub/chat-service:local
+    build: { context: ., dockerfile: services/chat-service/Dockerfile }
+    deploy: { replicas: 2 }
+    environment: { <<: *service-env }
+
+  session-service:
+    <<: *service
+    image: engagehub/session-service:local
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_session
+
+  agent-orchestrator:
+    <<: *service
+    image: engagehub/agent-orchestrator:local
+    build: { context: ., dockerfile: services/agent-orchestrator/Dockerfile }
+    environment: { <<: *service-env }
+
+  human-agent-service:
+    <<: *service
+    image: engagehub/human-agent-service:local
+    build: { context: ., dockerfile: services/human-agent-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_human
+
+  product-service:
+    <<: *service
+    image: engagehub/product-service:local
+    build: { context: ., dockerfile: services/product-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_product
+
+  order-service:
+    <<: *service
+    image: engagehub/order-service:local
+    build: { context: ., dockerfile: services/order-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_order
+
+  notification-service:
+    <<: *service
+    image: engagehub/notification-service:local
+    build: { context: ., dockerfile: services/notification-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_notification
+
+  analytics-service:
+    <<: *service
+    image: engagehub/analytics-service:local
+    build: { context: ., dockerfile: services/analytics-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_analytics
+
+  audit-service:
+    <<: *service
+    image: engagehub/audit-service:local
+    build: { context: ., dockerfile: services/audit-service/Dockerfile }
+    environment:
+      <<: *service-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_audit
+
+  # ---------- The eight virtual agents: one image, one independent consumer group each ----------
+  va-product-advisor:
+    <<: *virtual-agent
+    build: { context: ., dockerfile: services/virtual-agent-service/Dockerfile }
+    deploy: { replicas: 2 }  # Two workers, so the chaos demo can show a consumer-group rebalance.
+    environment: { <<: *service-env, AGENT_TYPE: product_advisor }
+  va-order-tracking:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: order_tracking }
+  va-returns-refunds:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: returns_refunds }
+  va-billing:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: billing }
+  va-technical-support:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: technical_support }
+  va-faq:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: faq }
+  va-complaint-management:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: complaint_management }
+  va-supervisor:
+    <<: *virtual-agent
+    environment: { <<: *service-env, AGENT_TYPE: supervisor }
+
+  # ---------- Observability ----------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes: ["./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-19090}:9090"]
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    restart: unless-stopped
+    command: ["--kafka.server=kafka-1:9092", "--kafka.server=kafka-2:9092", "--kafka.server=kafka-3:9092"]
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-engagehub-local-only}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["127.0.0.1:${GRAFANA_PORT:-13000}:3000"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      MEMORY_MAX_TRACES: "20000"
+    ports: ["127.0.0.1:${JAEGER_PORT:-16686}:16686"]
+
+volumes:
+  kafka-1:
+  kafka-2:
+  kafka-3:
+  redis-1:
+  redis-2:
+  redis-3:
+  redis-4:
+  redis-5:
+  redis-6:
+  postgres:

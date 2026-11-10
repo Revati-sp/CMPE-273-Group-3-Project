@@ -1,0 +1,16 @@
+# Lower-memory profile for a laptop whose Docker VM is shared with other work:
+#   docker compose -f docker-compose.yml -f docker-compose.lite.yml up -d   (or: make up-lite)
+#
+# Seven virtual agents share one process but keep their own Kafka consumer groups. Product
+# Advisor stays in its own two-replica deployment so the worker failover demo still works.
+# Saves roughly 1 GB compared with the full stack.
+services:
+  va-order-tracking:
+    environment:
+      AGENT_TYPE: order_tracking,returns_refunds,billing,technical_support,faq,complaint_management,supervisor
+  va-returns-refunds: { profiles: [full-only] }
+  va-billing: { profiles: [full-only] }
+  va-technical-support: { profiles: [full-only] }
+  va-faq: { profiles: [full-only] }
+  va-complaint-management: { profiles: [full-only] }
+  va-supervisor: { profiles: [full-only] }

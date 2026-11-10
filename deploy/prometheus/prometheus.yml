@@ -1,0 +1,128 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: auth-service
+    dns_sd_configs:
+      - names: [auth-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: tenant-service
+    dns_sd_configs:
+      - names: [tenant-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: customer-service
+    dns_sd_configs:
+      - names: [customer-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: chat-service
+    dns_sd_configs:
+      - names: [chat-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: session-service
+    dns_sd_configs:
+      - names: [session-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: agent-orchestrator
+    dns_sd_configs:
+      - names: [agent-orchestrator]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: human-agent-service
+    dns_sd_configs:
+      - names: [human-agent-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: product-service
+    dns_sd_configs:
+      - names: [product-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: order-service
+    dns_sd_configs:
+      - names: [order-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: notification-service
+    dns_sd_configs:
+      - names: [notification-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: analytics-service
+    dns_sd_configs:
+      - names: [analytics-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: audit-service
+    dns_sd_configs:
+      - names: [audit-service]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-product-advisor
+    dns_sd_configs:
+      - names: [va-product-advisor]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-order-tracking
+    dns_sd_configs:
+      - names: [va-order-tracking]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-returns-refunds
+    dns_sd_configs:
+      - names: [va-returns-refunds]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-billing
+    dns_sd_configs:
+      - names: [va-billing]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-technical-support
+    dns_sd_configs:
+      - names: [va-technical-support]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-faq
+    dns_sd_configs:
+      - names: [va-faq]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-complaint-management
+    dns_sd_configs:
+      - names: [va-complaint-management]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: va-supervisor
+    dns_sd_configs:
+      - names: [va-supervisor]
+        type: A
+        port: 8000
+        refresh_interval: 5s
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: [kafka-exporter:9308]

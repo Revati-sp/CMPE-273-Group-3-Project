@@ -3,3 +3,10 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+.env
+node_modules/
+dist/
+*.tsbuildinfo

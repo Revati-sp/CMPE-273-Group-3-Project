@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "engagehub-common"
+version = "1.0.0"
+description = "Shared event contracts, messaging, session state and service scaffolding for EngageHub"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+include = ["engagehub_common*"]
+
+[tool.setuptools.package-data]
+"engagehub_common.proto" = ["*.proto"]

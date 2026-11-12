@@ -1,0 +1,28 @@
+# Chat Service: WebSocket chat, sequenced reply log, Redis cursor and replay.
+#   cp secret.env.example secret.env   # then set real values; secret.env is git-ignored
+#   kubectl apply -k deploy/k8s/chat-service
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: engagehub
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: engagehub
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+  - hpa.yaml
+  - ingress.yaml
+  - kafka-topics-job.yaml
+secretGenerator:
+  - name: chat-service-secrets
+    envs:
+      - secret.env
+generatorOptions:
+  disableNameSuffixHash: false
+images:
+  - name: engagehub/chat-service
+    newTag: local

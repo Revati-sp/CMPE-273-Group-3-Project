@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from engagehub_common.config import ServiceSettings
-from engagehub_common.db import Database
+from engagehub_common.db import Database, ensure_database
 from engagehub_common.events import EventEnvelope, EventType, new_id
 from engagehub_common.logging_setup import bind_event_context, configure_logging, correlation_id_var
 from engagehub_common.messaging.bus import EventProducer, PublishError
@@ -55,6 +55,7 @@ class Runtime:
         dedupe: bool = True,
         offset_reset: str = "earliest",
         commit: bool = True,
+        **runner_options,
     ) -> ConsumerRunner:
         consumer = self.consumer_factory(topics, group, offset_reset)
         runner = ConsumerRunner(
@@ -67,6 +68,7 @@ class Runtime:
             max_attempts=self.settings.consumer_max_attempts,
             retry_base_seconds=self.settings.consumer_retry_base_seconds,
             commit=commit and group is not None,
+            **runner_options,
         )
         self.runners.append(runner)
         return runner
@@ -136,6 +138,7 @@ async def connect_runtime(settings: ServiceSettings, *, kafka: bool, redis: bool
 
         runtime.redis = await retry_async(start_redis, attempts=60)
     if db:
+        await retry_async(lambda: ensure_database(settings.database_url), attempts=60)
         runtime.db = Database(settings.database_url)
         await retry_async(runtime.db.ping, attempts=60)
     return runtime
@@ -214,10 +217,12 @@ def create_service_app(
         log.warning("event broker unavailable", extra={"error": str(exc)})
         return JSONResponse({"detail": "event broker unavailable, retry shortly"}, status_code=503)
 
+    @app.get("/health", tags=["health"], include_in_schema=False)
     @app.get("/healthz", tags=["health"])
     async def liveness() -> dict:
         return {"status": "ok", "service": settings.service_name, "pod": settings.pod_name}
 
+    @app.get("/ready", tags=["health"], include_in_schema=False)
     @app.get("/readyz", tags=["health"])
     async def readiness(response: Response) -> dict:
         rt: Runtime = app.state.runtime

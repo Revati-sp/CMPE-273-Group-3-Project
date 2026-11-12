@@ -4,6 +4,7 @@ import { AdminView } from "./views/AdminView";
 import { AgentView } from "./views/AgentView";
 import { CustomerView } from "./views/CustomerView";
 import { Login } from "./views/Login";
+import { ReplayDemoView } from "./views/ReplayDemoView";
 
 const STORAGE_KEY = "engagehub.session";
 
@@ -20,6 +21,7 @@ const ROLE_LABEL = { customer: "Customer", agent: "Human agent", admin: "Adminis
 export function App() {
   const [session, setSession] = useState<Session | null>(loadSession);
   const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [customerTab, setCustomerTab] = useState<"support" | "replay">("support");
 
   useEffect(() => {
     if (!session) return;
@@ -52,10 +54,17 @@ export function App() {
       <header className="topbar">
         <strong>{tenant?.name ?? user.tenant_id}</strong>
         <span className="muted">{ROLE_LABEL[user.role]}</span>
+        {user.role === "customer" && (
+          <nav className="tabs" aria-label="Customer views">
+            <button className={customerTab === "support" ? "active" : ""} onClick={() => setCustomerTab("support")}>Support chat</button>
+            <button className={customerTab === "replay" ? "active" : ""} onClick={() => setCustomerTab("replay")}>Reply stream demo</button>
+          </nav>
+        )}
         <span className="right">{user.name}</span>
         <button onClick={logout}>Sign out</button>
       </header>
-      {user.role === "customer" && <CustomerView session={session} />}
+      {user.role === "customer" && customerTab === "support" && <CustomerView session={session} />}
+      {user.role === "customer" && customerTab === "replay" && <ReplayDemoView session={session} />}
       {user.role === "agent" && <AgentView session={session} />}
       {user.role === "admin" && <AdminView session={session} />}
     </>

@@ -37,6 +37,8 @@ class EventType(StrEnum):
     AGENT_ASSIGNED = "agent_assigned"
     AGENT_TRANSFERRED = "agent_transferred"
     AGENT_RELEASED = "agent_released"
+    # agent.responses: a virtual agent's reply, committed to the customer reply log by chat-service
+    AGENT_RESPONSE = "agent_response"
     # chat.escalations
     ESCALATION_REQUESTED = "escalation_requested"
     HANDOFF_REQUESTED = "handoff_requested"
@@ -121,3 +123,44 @@ class EventEnvelope(BaseModel):
 
 def sender(kind: str, sender_id: str, name: str) -> dict[str, str]:
     return {"type": kind, "id": sender_id, "name": name}
+
+
+def agent_response_event(
+    *,
+    event_id: str,
+    conversation_id: str,
+    tenant_id: str,
+    customer_id: str,
+    message_id: str,
+    text: str,
+    sender_id: str,
+    sender_name: str,
+    producer_service: str,
+    correlation_id: str | None = None,
+    sender_type: str = "virtual_agent",
+    metadata: dict | None = None,
+    source_message_id: str | None = None,
+) -> EventEnvelope:
+    """The record a virtual agent publishes to ``agent.responses``.
+
+    Shared by the producer (virtual-agent-service) and the consumer's tests
+    (chat-service), so the two sides cannot drift apart.
+    """
+    payload: dict[str, Any] = {
+        "text": text,
+        "sender": sender(sender_type, sender_id, sender_name),
+        "metadata": metadata or {},
+    }
+    if source_message_id:
+        payload["source_message_id"] = source_message_id
+    return EventEnvelope(
+        event_id=event_id,
+        event_type=EventType.AGENT_RESPONSE,
+        conversation_id=conversation_id,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        message_id=message_id,
+        correlation_id=correlation_id or new_id(),
+        producer_service=producer_service,
+        payload=payload,
+    )

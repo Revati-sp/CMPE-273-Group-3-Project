@@ -10,3 +10,6 @@ build/
 node_modules/
 dist/
 *.tsbuildinfo
+
+# Kubernetes secrets
+deploy/k8s/**/secret.env

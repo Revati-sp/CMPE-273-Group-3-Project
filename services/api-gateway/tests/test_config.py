@@ -1,4 +1,5 @@
 """Static checks on the gateway routes. CI also runs `nginx -t` on the rendered config."""
+
 import pathlib
 import re
 
@@ -21,7 +22,13 @@ def test_websocket_route_upgrades_the_connection():
 
 
 def test_operational_endpoints_are_blocked_before_api_routes():
-    assert CONFIG.index("(metrics|healthz|readyz") < CONFIG.index("location ~ ^/api/(?<api_name>")
+    assert CONFIG.index("(metrics|health|healthz|ready|readyz") < CONFIG.index("location ~ ^/api/(?<api_name>")
+
+
+def test_customer_reply_stream_socket_is_proxied_with_upgrade():
+    block = CONFIG[CONFIG.index("location ^~ /ws/customer/") :]
+    block = block[: block.index("}")]
+    assert "proxy_set_header Upgrade $http_upgrade" in block and "chat-service" in block
 
 
 def test_correlation_id_is_generated_and_forwarded():

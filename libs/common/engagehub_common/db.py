@@ -16,6 +16,27 @@ from sqlalchemy.pool import StaticPool
 _SCHEMA_LOCK_ID = 7_219_004
 
 
+async def ensure_database(url: str) -> None:
+    """Create the service's PostgreSQL database if missing.
+
+    The init script only runs on a fresh volume, so a database added later must be
+    created at startup. No-op for SQLite.
+    """
+    if not url.startswith("postgresql"):
+        return
+    from sqlalchemy.engine import make_url
+
+    target = make_url(url)
+    admin = create_async_engine(target.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as conn:
+            exists = await conn.scalar(text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": target.database})
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{target.database}"'))
+    finally:
+        await admin.dispose()
+
+
 class Database:
     def __init__(self, url: str) -> None:
         kwargs: dict = {"pool_pre_ping": True}

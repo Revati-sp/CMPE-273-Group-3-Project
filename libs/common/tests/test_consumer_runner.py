@@ -217,3 +217,73 @@ async def test_key_based_partitioning_keeps_a_conversation_on_one_partition(kafk
     await publish(kafka, *(event(conv="c-ordered", n=i) for i in range(50)))
     populated = {p for (t, p), recs in kafka.logs.items() if t == TOPIC and recs}
     assert populated == {kafka.partition_for(b"c-ordered")}
+
+
+async def test_custom_parser_and_dead_letter_topic(kafka):
+    import json
+
+    from pydantic import BaseModel, ConfigDict
+
+    class Flat(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        event_id: str
+        event_type: str
+        conversation_id: str
+        correlation_id: str = "c"
+        timestamp: str = "2026-01-01T00:00:00+00:00"
+
+    def parse(raw):
+        return Flat.model_validate_json(raw)
+
+    handled = []
+
+    async def handler(e, _):
+        if e.event_id == "bad":
+            raise ValueError("boom")
+        handled.append(e.event_id)
+
+    kafka.append(TOPIC, b"c1", json.dumps({"event_id": "ok", "event_type": "X", "conversation_id": "c1"}).encode())
+    kafka.append(TOPIC, b"c1", json.dumps({"event_id": "bad", "event_type": "X", "conversation_id": "c1"}).encode())
+    kafka.append(TOPIC, b"c1", b'{"unexpected": true}')
+    consumer = kafka.consumer([TOPIC], "flat")
+    await consumer.start()
+    runner = ConsumerRunner(
+        consumer, handler, group="flat", producer=kafka.producer(), retry_base_seconds=0,
+        parser=parse, dead_letter_topic="custom.dlq",
+    )  # fmt: skip
+    await runner.process_once()
+    assert handled == ["ok"]
+    assert len(kafka.events("custom.dlq")) == 2
+    assert kafka.events(DEAD_LETTER) == []
+
+
+async def test_transient_errors_are_retried_until_recovery_and_never_dead_lettered(kafka):
+    calls = []
+
+    async def handler(e, _):
+        calls.append(1)
+        if len(calls) < 15:  # more failures than max_attempts
+            raise ConnectionRefusedError("database down")
+
+    await publish(kafka, event())
+    runner = await make_runner(kafka, handler, transient_errors=(ConnectionRefusedError,))
+    await runner.process_once()
+    assert len(calls) == 15
+    assert kafka.events(DEAD_LETTER) == []
+    assert kafka.committed  # committed only once the handler finally succeeded
+
+
+async def test_stopping_during_a_transient_outage_leaves_the_offset_uncommitted(kafka):
+    import asyncio
+
+    async def handler(e, _):
+        raise ConnectionRefusedError("database down")
+
+    await publish(kafka, event())
+    runner = await make_runner(kafka, handler, transient_errors=(ConnectionRefusedError,))
+    runner.started = True
+    runner.start()
+    await asyncio.sleep(0.05)
+    await runner.stop()
+    assert kafka.committed == {}
+    assert kafka.events(DEAD_LETTER) == []

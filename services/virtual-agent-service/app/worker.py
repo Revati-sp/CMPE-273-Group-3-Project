@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from engagehub_common.events import EventEnvelope, EventType, derive_event_id, sender
+from engagehub_common.events import EventEnvelope, EventType, agent_response_event, derive_event_id, sender
 from engagehub_common.llm import LLMProvider
 from engagehub_common.messaging.bus import EventProducer, Record
 from engagehub_common.service import Runtime
 from engagehub_common.session.history import HistoryClient, HistoryUnavailable
 from engagehub_common.session.log import ConversationLog
 from engagehub_common.session.store import WORKFLOW_VIRTUAL, WORKFLOW_WAITING_HUMAN, SessionStore
-from engagehub_common.topics import ESCALATIONS
+from engagehub_common.topics import AGENT_RESPONSES, ESCALATIONS
 
 from app.agents import AgentReply, AgentTask, VirtualAgent
 from app.clients import DependencyUnavailable
@@ -65,7 +65,7 @@ class AgentWorker:
 
     async def _post_reply(self, event: EventEnvelope, reply: AgentReply) -> None:
         # The key is derived from the source message, so a redelivered task reuses the same reply.
-        await self.log.append(
+        result = await self.log.append(
             tenant_id=event.tenant_id,
             conversation_id=event.conversation_id,
             customer_id=event.customer_id,
@@ -79,6 +79,7 @@ class AgentWorker:
             idempotency_key=f"reply:{event.payload['source_message_id']}:{self.agent.agent_type}",
             correlation_id=event.correlation_id,
         )
+        await self._publish_agent_response(event, reply, result.event)
         if reply.notification:
             await self.runtime.publish_notification(
                 tenant_id=event.tenant_id,
@@ -107,6 +108,30 @@ class AgentWorker:
                     },
                 ),
             )
+
+    async def _publish_agent_response(self, task: EventEnvelope, reply: AgentReply, sequenced: EventEnvelope) -> None:
+        """Publish the reply to agent.responses, where chat-service commits it to the customer reply log.
+
+        Reusing the sequenced reply's message ID means a redelivered task produces an
+        identical record, and chat-service stores it only once.
+        """
+        await self.producer.publish(
+            AGENT_RESPONSES,
+            agent_response_event(
+                event_id=derive_event_id(task.event_id, "agent-response"),
+                conversation_id=task.conversation_id,
+                tenant_id=task.tenant_id,
+                customer_id=task.customer_id,
+                message_id=sequenced.message_id,
+                text=reply.text,
+                sender_id=self.agent.agent_type,
+                sender_name=self.agent.display_name,
+                producer_service=self.service,
+                correlation_id=task.correlation_id,
+                metadata=reply.metadata,
+                source_message_id=task.payload["source_message_id"],
+            ),
+        )
 
     async def handle_escalation(self, event: EventEnvelope, _record: Record) -> None:
         """Supervisor: summarise the conversation and hand it to the human queue."""

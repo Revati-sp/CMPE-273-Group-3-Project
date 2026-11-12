@@ -13,6 +13,7 @@ from engagehub_common.session.grpc_client import GrpcHistoryClient
 from engagehub_common.session.store import SessionStore
 from engagehub_common.topics import (
     AGENT_EVENTS,
+    AGENT_RESPONSES,
     CHAT_MESSAGES,
     CHAT_REPLIES,
     CHAT_REPLIES_DELIVERY,
@@ -27,7 +28,7 @@ from redis.exceptions import RedisError
 from app.core import ChatCore, ConnectionRejected
 from app.protocol import CLOSE_UNAUTHORIZED, HelloFrame
 from app.replies.api import router as replies_router
-from app.replies.consumer import TRANSIENT_ERRORS, ReplyConsumer
+from app.replies.consumer import TRANSIENT_ERRORS, AgentResponseConsumer, ReplyConsumer
 from app.replies.cursor import CursorStore
 from app.replies.hub import ReplyHub
 from app.replies.log import ConversationOwnedElsewhere, MessageLog
@@ -178,6 +179,15 @@ def setup_reply_stream(app: FastAPI, rt: Runtime, pod: str) -> None:
         ReplyConsumer(message_log, rt.producer).handle,
         dedupe=False,
         parser=VirtualAgentReplyProduced.parse,
+        dead_letter_topic=CHAT_REPLIES_DLQ,
+        transient_errors=TRANSIENT_ERRORS,
+    )
+    # Real virtual-agent responses. A separate group, so the fake-producer path is unaffected.
+    rt.add_consumer(
+        [AGENT_RESPONSES],
+        "chat-agent-responses-consumer",
+        AgentResponseConsumer(message_log, rt.producer).handle,
+        dedupe=False,
         dead_letter_topic=CHAT_REPLIES_DLQ,
         transient_errors=TRANSIENT_ERRORS,
     )

@@ -621,3 +621,138 @@ def test_dev_fake_reply_endpoint_publishes_through_kafka(stack):
 def test_health_aliases(client):
     assert client.get("/health").status_code == 200
     assert client.get("/ready").json()["status"] == "ready"
+
+
+# Real agent responses on agent.responses
+
+
+def publish_agent_response(
+    stack,
+    text,
+    *,
+    conversation_id=CONV,
+    message_id=None,
+    customer_id="cust-acme-dana",
+    tenant_id="acme",
+    overrides=None,
+):
+    """Publishes exactly what virtual-agent-service publishes (same shared builder)."""
+    from engagehub_common.events import agent_response_event
+    from engagehub_common.topics import AGENT_RESPONSES
+
+    message_id = message_id or f"message-{uuid.uuid4()}"
+    event = agent_response_event(
+        event_id=f"evt-{message_id}",
+        conversation_id=conversation_id,
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        message_id=message_id,
+        text=text,
+        sender_id="order_tracking",
+        sender_name="Order Tracking",
+        producer_service="virtual-agent-service",
+        source_message_id="customer-msg-1",
+    )
+    if overrides:  # model_copy skips validation, so this can produce malformed records on purpose
+        event = event.model_copy(update=overrides)
+    stack.kafka.append(AGENT_RESPONSES, conversation_id.encode(), event.to_bytes())
+    return message_id
+
+
+def test_real_agent_response_is_committed_and_delivered(stack, client):
+    create(client)
+    with client.websocket_connect(f"/ws/customer/{CONV}") as ws:
+        connect(ws)
+        message_id = publish_agent_response(stack, "Order ORD-1001 is delivered.")
+        frame = recv(ws)
+        assert frame["type"] == "chat_message" and frame["sequence_number"] == 1
+        assert frame["message_id"] == message_id and frame["content"] == "Order ORD-1001 is delivered."
+        assert (frame["sender_type"], frame["sender_id"], frame["sender_name"]) == (
+            "virtual_agent",
+            "order_tracking",
+            "Order Tracking",
+        )
+        assert ack(ws, 1, message_id)["cursor"]["last_acknowledged_sequence"] == 1
+    body = client.get(f"/conversations/{CONV}/messages", headers=auth_headers(**DANA)).json()
+    assert [m["message_id"] for m in body["messages"]] == [message_id]
+
+
+def test_real_and_fake_replies_share_one_sequence_and_replay_together(stack, client):
+    create(client)
+    with client.websocket_connect(f"/ws/customer/{CONV}") as ws:
+        connect(ws)
+        stack.publish("fake 1")
+        assert recv(ws)["content"] == "fake 1"
+        publish_agent_response(stack, "real 2")
+        assert recv(ws)["content"] == "real 2"
+        ack(ws, 2)
+    stack.publish("fake 3")
+    publish_agent_response(stack, "real 4")
+    wait_for(lambda: stack.stored(client) == 4)
+    with client.websocket_connect(f"/ws/customer/{CONV}") as ws:
+        _, replay = connect(ws)
+    assert seqs(replay) == [3, 4]
+    assert sorted(f["content"] for f in replay if f["type"] == "chat_message") == ["fake 3", "real 4"]
+
+
+def test_redelivered_agent_response_is_committed_once(stack):
+    with TestClient(stack.app()) as first:
+        create(first)
+        for _ in range(3):
+            publish_agent_response(stack, "only once", message_id="message-real-1")
+        wait_for(lambda: stack.stored(first) == 1)
+    stack.kafka.committed.clear()  # lost commits: the whole topic is redelivered
+    with TestClient(stack.app(pod="pod-b")) as second:
+        wait_for(lambda: any(group == "chat-agent-responses-consumer" for group, _ in stack.kafka.committed))
+        assert stack.stored(second) == 1
+
+
+def test_agent_response_registers_a_conversation_for_its_customer(stack, client):
+    publish_agent_response(stack, "hello from an agent", conversation_id="conversation-new")
+    wait_for(lambda: stack.stored(client, "conversation-new") == 1)
+    with client.websocket_connect("/ws/customer/conversation-new") as ws:
+        _, replay = connect(ws)
+    assert [f["content"] for f in replay if f["type"] == "chat_message"] == ["hello from an agent"]
+    with client.websocket_connect("/ws/customer/conversation-new") as ws:
+        hello(ws, subject="cust-acme-vic", tenant="acme")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            recv(ws)
+    assert closed.value.code == 4404
+
+
+@pytest.mark.parametrize(
+    "owner_override",
+    [{"customer_id": "cust-acme-vic"}, {"tenant_id": "globex"}],
+)
+def test_agent_response_cannot_write_into_someone_elses_conversation(stack, client, owner_override):
+    create(client)
+    publish_agent_response(stack, "misrouted", **owner_override)  # customer_id / tenant_id arguments
+    wait_for(lambda: stack.kafka.events(CHAT_REPLIES_DLQ))
+    assert stack.stored(client) == 0
+    letter = stack.kafka.events(CHAT_REPLIES_DLQ)[0]
+    assert "another customer or tenant" in letter.payload["reason"]
+    assert letter.payload["source_topic"] == "agent.responses"
+
+
+def test_malformed_agent_responses_are_dead_lettered_and_other_types_ignored(stack, client):
+    from engagehub_common.events import EventEnvelope, EventType
+    from engagehub_common.topics import AGENT_RESPONSES
+
+    create(client)
+    publish_agent_response(stack, "no id", overrides={"message_id": None})
+    publish_agent_response(
+        stack, "bad sender", overrides={"payload": {"text": "x", "sender": {"type": "robot", "id": "r"}}}
+    )
+    publish_agent_response(stack, "no text", overrides={"payload": {"sender": {"type": "virtual_agent", "id": "a"}}})
+    stack.kafka.append(AGENT_RESPONSES, CONV.encode(), b"not json")
+    other = EventEnvelope(
+        event_type=EventType.AGENT_ROUTED, conversation_id=CONV, tenant_id="acme", producer_service="x", payload={}
+    )
+    stack.kafka.append(AGENT_RESPONSES, CONV.encode(), other.to_bytes())
+    publish_agent_response(stack, "valid one after the bad ones")
+    wait_for(lambda: stack.stored(client) == 1)
+    wait_for(lambda: len(stack.kafka.events(CHAT_REPLIES_DLQ)) == 4)
+    reasons = sorted(e.payload["reason"].split(":")[0] for e in stack.kafka.events(CHAT_REPLIES_DLQ))
+    assert reasons == ["non_retryable", "non_retryable", "non_retryable", "schema_validation"]
+    body = client.get(f"/conversations/{CONV}/messages", headers=auth_headers(**DANA)).json()
+    assert [m["content"] for m in body["messages"]] == ["valid one after the bad ones"]

@@ -144,7 +144,7 @@ flowchart TB
 
 ## Component: Customer Reply Stream (WebSocket, Sequenced Log, Redis Cursor, Replay)
 
-This component delivers agent replies to a customer over a WebSocket and guarantees that a customer who disconnects, or whose Chat Service pod dies, gets every missed message back, in order and without duplicates, when they reconnect.
+This component delivers agent replies to a customer over a WebSocket. Replies come from two sources: real virtual-agent responses on `agent.responses`, and fake replies on `chat.replies` for testing and demos. Either way, it guarantees that a customer who disconnects, or whose Chat Service pod dies, gets every missed message back, in order and without duplicates, when they reconnect.
 
 It lives in `services/chat-service` (module `app/replies/`) next to the existing omnichannel chat flow, and shares its conversation IDs.
 
@@ -152,9 +152,11 @@ It lives in `services/chat-service` (module `app/replies/`) next to the existing
 
 ```mermaid
 flowchart LR
+    VA["Virtual agents<br/>virtual-agent-service"]
+    AR[["Kafka: agent.responses<br/>key = conversation_id"]]
     P["Fake Reply Producer<br/>scripts/fake_reply_producer.py<br/>or POST /dev/fake-replies"]
     K[["Kafka: chat.replies<br/>key = conversation_id"]]
-    C["Chat Consumer<br/>group chat-replies-consumer"]
+    C["Chat Consumer<br/>groups chat-replies-consumer,<br/>chat-agent-responses-consumer"]
     DB[("PostgreSQL<br/>chat_messages<br/>chat_conversations")]
     D[["Kafka: chat.replies.delivery<br/>(fan-out to every pod)"]]
     H["ReplyHub on each<br/>Chat Service pod"]
@@ -164,6 +166,7 @@ flowchart LR
     DLQ[["chat.replies.dlq"]]
 
     P --> K --> C
+    VA --> AR --> C
     C -->|"assign sequence, append"| DB
     C -->|"sequenced message"| D --> H --> WS --> UI
     C -.->|"permanent failures"| DLQ
@@ -174,7 +177,7 @@ flowchart LR
 
 | Piece | Role |
 |---|---|
-| **Kafka** (`chat.replies`) | Durable, asynchronous transport for replies. The conversation ID is the key, so one conversation's replies stay ordered in one partition. |
+| **Kafka** (`agent.responses`, `chat.replies`) | Durable, asynchronous transport for replies. The conversation ID is the key, so one conversation's replies stay ordered in one partition. |
 | **PostgreSQL** (`chat_messages`) | The durable, sequenced, append-only message log. The source of truth for replay. |
 | **Redis** (`chat:cursor:…`) | Fast store for the customer's last acknowledged message, plus active-session markers. Never the only copy of a message. |
 | **WebSocket** | Real-time delivery to the customer. |
@@ -232,12 +235,45 @@ Frame sent to the customer:
 }
 ```
 
+### Real agent responses (`agent.responses`)
+
+When a virtual agent answers a customer, `virtual-agent-service` sequences the reply into the platform's chat flow as before and also publishes a record to `agent.responses`. Chat Service commits that record to the same PostgreSQL log, where it gets the next sequence number for the conversation and is delivered and replayed exactly like a fake reply.
+
+The record is the platform's standard `EventEnvelope`, built by one shared function (`agent_response_event` in `libs/common/engagehub_common/events.py`) that both sides use:
+
+```json
+{
+  "event_id": "5c1e…",
+  "event_type": "agent_response",
+  "conversation_id": "conversation-123",
+  "tenant_id": "acme",
+  "customer_id": "cust-acme-dana",
+  "message_id": "9f0a…",
+  "sequence_number": null,
+  "correlation_id": "0f7c…",
+  "timestamp": "2026-11-12T12:00:00Z",
+  "producer_service": "virtual-agent-service",
+  "payload": {
+    "text": "Order ORD-1001 is delivered.",
+    "sender": {"type": "virtual_agent", "id": "order_tracking", "name": "Order Tracking"},
+    "metadata": {"order_id": "ORD-1001"},
+    "source_message_id": "…"
+  }
+}
+```
+
+- **Idempotent end to end.** The `message_id` is the reply's ID in the platform chat flow, and the event ID is derived from the agent task. A redelivered task republishes an identical record, and Chat Service stores it once.
+- **Conversation registration.** A record carries its tenant and customer, so a conversation Chat Service has not seen is registered for that customer. A record pointing at a conversation owned by a different customer or tenant is refused and dead-lettered.
+- **Validation.** Records missing the conversation, customer, message ID, text or sender, or with an unknown sender type, go to `chat.replies.dlq` with the reason and source topic. Other event types on the topic are ignored, so the topic can grow.
+- **Separate consumer group** (`chat-agent-responses-consumer`), so the fake-producer path behaves exactly as before.
+
 ### Kafka topics
 
 | Topic | Partitions | Key | Purpose |
 |---|---|---|---|
-| `chat.replies` | 12 | conversation ID | Replies to be sequenced. Consumer group `chat-replies-consumer`. |
-| `chat.replies.dlq` | 3 | conversation ID | Events that can never succeed: schema errors, unknown conversation, a message ID reused in another conversation. |
+| `agent.responses` | 12 | conversation ID | Real virtual-agent responses (`EventEnvelope`, `agent_response`). Consumer group `chat-agent-responses-consumer`. |
+| `chat.replies` | 12 | conversation ID | Fake or external replies (`VirtualAgentReplyProduced`). Consumer group `chat-replies-consumer`. |
+| `chat.replies.dlq` | 3 | conversation ID | Events from either input topic that can never succeed: schema errors, unknown conversation, a message ID reused in another conversation, a conversation owned by someone else. |
 | `chat.replies.delivery` | 12 | conversation ID | Sequenced messages, read by every Chat Service pod (no consumer group) to push to its own sockets. |
 
 Topics are created by the `kafka-init` service in Docker Compose (`python -m engagehub_common.messaging.provision`) and by the `kafka-topics` Job in Kubernetes. Both are idempotent.
@@ -461,13 +497,15 @@ ENGAGEHUB_E2E=1 .venv/bin/python -m pytest tests/e2e -v                       # 
 | Database failure | `test_database_outage_is_retried_*`, `test_database_outage_rejects_new_sockets_*` |
 | Chat Service restart | `test_chat_service_restart_keeps_acknowledged_state_and_replays`, `test_shutdown_closes_customer_sockets_*` |
 | Automatic reconnect, UI deduplication | `frontend/src/replay/ReplayClient.test.ts` |
+| Real agent responses | `test_real_agent_response_is_committed_and_delivered`, `test_real_and_fake_replies_share_one_sequence_*`, `test_redelivered_agent_response_*`, `test_agent_response_*` (chat-service); `test_reply_is_published_to_agent_responses_*`, `test_redelivered_task_republishes_*`, `test_failed_agent_response_publish_*` (virtual-agent-service) |
 | End to end | `tests/e2e/test_reply_replay_e2e.py` (runs `scripts/demo_reply_replay.py`) |
 
 Terminal output from the last run:
 
 ```text
-services/chat-service   64 passed, 2 skipped        (SQLite; the 2 skipped need TEST_POSTGRES_URL)
-services/chat-service   66 passed                    (TEST_POSTGRES_URL set, PostgreSQL 16)
+services/chat-service           71 passed, 2 skipped   (SQLite; the 2 skipped need TEST_POSTGRES_URL)
+services/chat-service           73 passed              (TEST_POSTGRES_URL set, PostgreSQL 16)
+services/virtual-agent-service  22 passed
 libs/common             52 passed
 frontend                36 passed (ReplayClient 14, ChatConnection 22)
 scripts/tests           5 passed
@@ -487,5 +525,5 @@ scripts/tests           5 passed
 - The cursor is per customer, not per device: two devices of one customer share it.
 - If Redis is down and the client sends no `last_received_sequence`, the whole history is replayed (and deduplicated by the client).
 - Every pod reads every message on `chat.replies.delivery`. That is simple and fine for this scale; very large deployments would route by conversation instead.
-- Virtual agents in the main platform still publish to `chat.messages`. Routing them to `chat.replies` would unify the two flows.
+- Virtual agents publish each reply to both `chat.messages` (the platform chat flow) and `agent.responses` (this log), so a reply exists in two logs with the same `message_id` but independent sequence numbers. Customer messages sent on `/ws/customer` are stored in this log only and do not reach the agent orchestrator yet.
 - The Kubernetes manifests assume Kafka, Redis Cluster and PostgreSQL are already installed in the cluster.

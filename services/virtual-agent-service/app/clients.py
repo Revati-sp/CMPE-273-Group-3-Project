@@ -56,6 +56,7 @@ class DomainClient:
         self._product_breaker = CircuitBreaker("product-service")
         self._order_breaker = CircuitBreaker("order-service")
         self._fixture_orders = _load_orders(order_fixture) if order_fixture else None
+        self._fixture_returns: dict[tuple[str, str], dict] = {}
 
     def _headers(self, tenant_id: str, customer_id: str, extra: dict | None = None) -> dict:
         token = service_token(self.settings.jwt_secret, self.settings.service_name, tenant_id, customer_id)
@@ -93,16 +94,21 @@ class DomainClient:
         )  # fmt: skip
         return response.json()
 
+    def _fixture_order(self, tenant_id: str, customer_id: str, order_id: str) -> dict | None:
+        if self._fixture_orders is None:
+            return None
+        return next(
+            (
+                item
+                for item in self._fixture_orders
+                if item["id"] == order_id and _owned_by(item, tenant_id, customer_id)
+            ),
+            None,
+        )
+
     async def get_order(self, tenant_id, customer_id, order_id) -> dict | None:
         if self._fixture_orders is not None:
-            order = next(
-                (
-                    item
-                    for item in self._fixture_orders
-                    if item["id"] == order_id and _owned_by(item, tenant_id, customer_id)
-                ),
-                None,
-            )
+            order = self._fixture_order(tenant_id, customer_id, order_id)
             return _public_order(order) if order else None
         response = await self._request(
             self.orders, self._order_breaker, "GET", f"/orders/{order_id}",
@@ -122,6 +128,22 @@ class DomainClient:
         return response.json() if response.status_code == 200 else []
 
     async def create_return(self, tenant_id, customer_id, order_id, reason, idempotency_key) -> dict | None:
+        if self._fixture_orders is not None:
+            order = self._fixture_order(tenant_id, customer_id, order_id)
+            if order is None or order["status"] != "delivered":
+                return None
+            key = (order_id, idempotency_key)
+            created = self._fixture_returns.get(key)
+            if created is None:
+                created = {
+                    "id": f"RET-{order_id.removeprefix('ORD-')}",
+                    "order_id": order_id,
+                    "status": "open",
+                    "reason": reason,
+                    "refund_amount": order["total"],
+                }
+                self._fixture_returns[key] = created
+            return created
         response = await self._request(
             self.orders, self._order_breaker, "POST", f"/orders/{order_id}/returns",
             tenant_id=tenant_id, customer_id=customer_id,

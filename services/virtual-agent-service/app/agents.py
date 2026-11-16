@@ -126,7 +126,15 @@ class ReturnsRefundsAgent(VirtualAgent):
     async def respond(self, task: AgentTask) -> AgentReply:
         order_id = _order_id(task.text)
         if not order_id:
-            return AgentReply("I can help with that. What's the order number (for example, ORD-1001)?")
+            # "I also want to return it" follows the order question and names no id.
+            delivered = [
+                order["id"]
+                for order in await self.domain.list_orders(task.tenant_id, task.customer_id)
+                if order["status"] == "delivered"
+            ]
+            if len(delivered) != 1:
+                return AgentReply("I can help with that. What's the order number (for example, ORD-1001)?")
+            order_id = delivered[0]
         order = await self.domain.get_order(task.tenant_id, task.customer_id, order_id)
         if order is None:
             return AgentReply(f"I couldn't find order {order_id} on your account. Please check the number.")

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from app.clients import DomainClient
 
 REFUND_APPROVAL_LIMIT = 500.0
-_ORDER_RE = re.compile(r"\bORD-\d+\b", re.I)
+_ORDER_RE = re.compile(r"\bORD-(\d+)\b|\border\s+#?(\d+)\b", re.I)
 _PRICE_RE = re.compile(r"(?:under|below|less than|max|up to)\s*\$?\s*(\d+(?:\.\d+)?)", re.I)
 _STOPWORDS = {
     "a", "an", "the", "i", "me", "my", "for", "to", "of", "and", "or", "is", "are", "do", "you", "have",
@@ -56,7 +56,9 @@ def _money(value: float) -> str:
 
 def _order_id(text: str) -> str | None:
     match = _ORDER_RE.search(text)
-    return match.group(0).upper() if match else None
+    if not match:
+        return None
+    return f"ORD-{match.group(1) or match.group(2)}"
 
 
 class ProductAdvisorAgent(VirtualAgent):

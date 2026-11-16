@@ -11,7 +11,7 @@ from engagehub_common.topics import ESCALATIONS, agent_task_topic
 from fastapi import FastAPI
 
 from app.agents import AGENT_CLASSES
-from app.clients import DomainClient
+from app.clients import ORDER_FIXTURE, DomainClient
 from app.worker import AgentWorker, heartbeat_loop
 
 
@@ -27,7 +27,7 @@ def create_app(runtime: Runtime | None = None, history=None, domain=None) -> Fas
     async def setup(app: FastAPI, rt: Runtime) -> None:
         store = SessionStore(rt.redis, settings.session_ttl_seconds)
         client = history or GrpcHistoryClient(settings.session_grpc_target, settings.jwt_secret, settings.service_name)
-        shared_domain = domain or DomainClient(settings)
+        shared_domain = domain or DomainClient(settings, order_fixture=ORDER_FIXTURE)
         llm = get_llm_provider(settings.llm_provider)
         app.state.workers = {}
         for agent_type in agent_types:

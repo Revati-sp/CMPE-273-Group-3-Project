@@ -1,0 +1,13 @@
+[
+  {
+    "id": "ORD-1001",
+    "tenant_id": "acme",
+    "customer_id": "cust-acme-dana",
+    "status": "delivered",
+    "total": 189.0,
+    "payment_status": "paid",
+    "tracking_number": "TRK-ACME-1001",
+    "estimated_delivery": "2026-10-02",
+    "items": [{ "sku": "acme-tent-2p", "name": "Trailhead 2-Person Tent", "qty": 1 }]
+  }
+]

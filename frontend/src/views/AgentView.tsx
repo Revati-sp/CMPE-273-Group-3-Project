@@ -14,6 +14,8 @@ interface Entry {
   sentiment: number;
   tier: string;
   summary: string;
+  handler?: string;
+  frustrated?: boolean;
   position?: number;
   estimated_wait_seconds?: number;
 }
@@ -32,7 +34,12 @@ function EntryCard({ entry, children, onOpen, selected }: { entry: Entry; childr
         {entry.tier === "vip" && <span className="badge">VIP</span>}{" "}
         <span className="muted small">priority {entry.priority} · {entry.language}</span>
       </div>
-      <div className="small muted">{entry.reason.replaceAll("_", " ")} · {entry.intent}</div>
+      <div className="small muted">
+        {entry.reason.replaceAll("_", " ")} · {entry.intent}
+        {entry.handler ? ` · ${entry.handler.replaceAll("_", " ")}` : ""}
+        {entry.frustrated ? " · frustrated" : ""}
+      </div>
+      {entry.summary && <div className="small">{entry.summary}</div>}
       {entry.estimated_wait_seconds !== undefined && (
         <div className="small muted">Position {entry.position} · about {Math.max(1, Math.round(entry.estimated_wait_seconds / 60))} min</div>
       )}

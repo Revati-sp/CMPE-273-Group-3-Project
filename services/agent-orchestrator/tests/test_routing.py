@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import fakeredis.aioredis
 import pytest
 from app.orchestrator import Orchestrator
@@ -11,6 +13,7 @@ from engagehub_common.session.store import SessionState, SessionStore
 from engagehub_common.topics import AGENT_EVENTS, AGENT_TYPES, ANALYTICS, ESCALATIONS, agent_task_topic
 
 ALL_LIVE = dict.fromkeys(AGENT_TYPES, 1)
+DEMO_PHRASES = (Path(__file__).resolve().parents[3] / "demo" / "phrases.txt").read_text().splitlines()
 
 
 def classify(**overrides):
@@ -145,7 +148,7 @@ async def test_human_request_publishes_escalation(setup):
 
 async def test_unacceptable_get_me_a_manager_escalates_with_summary(setup):
     orchestrator, kafka, _, _ = setup
-    await orchestrator.handle_event(message("This is unacceptable, get me a manager."), RECORD)
+    await orchestrator.handle_event(message(DEMO_PHRASES[2]), RECORD)
     escalations = kafka.events(ESCALATIONS)
     assert len(escalations) == 1
     payload = escalations[0].payload

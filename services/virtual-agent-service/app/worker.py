@@ -129,6 +129,7 @@ class AgentWorker:
             idempotency_key=f"handoff:{event.event_id}",
             correlation_id=event.correlation_id,
         )
+        sentiment = float(event.payload.get("sentiment") or 0.0)
         await self.producer.publish(
             ESCALATIONS,
             EventEnvelope(
@@ -141,10 +142,12 @@ class AgentWorker:
                 producer_service=self.service,
                 payload={
                     "summary": summary,
+                    "handler": event.payload.get("agent") or "supervisor",
+                    "frustrated": sentiment <= -0.5,
                     "reason": event.payload.get("reason", "unspecified"),
                     "priority": event.payload.get("priority") or 1,
                     "intent": event.payload.get("intent") or "unknown",
-                    "sentiment": event.payload.get("sentiment") or 0.0,
+                    "sentiment": sentiment,
                     "language": event.payload.get("language") or (state.language if state else "en"),
                     "tier": event.payload.get("tier") or "standard",
                 },

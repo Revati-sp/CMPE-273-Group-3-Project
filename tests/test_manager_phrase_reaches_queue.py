@@ -118,6 +118,8 @@ async def test_manager_phrase_becomes_a_handoff_the_queue_accepts():
     handoffs = [event for event in kafka.events(ESCALATIONS) if event.event_type == EventType.HANDOFF_REQUESTED]
     assert len(handoffs) == 1
     assert handoffs[0].payload["reason"] == "customer_request"
+    assert handoffs[0].payload["handler"] == "supervisor"
+    assert handoffs[0].payload["frustrated"] is True
     assert "unacceptable" in handoffs[0].payload["summary"].lower()
 
     runtime = memory_runtime("human-agent-service", kafka=kafka, redis=redis)
@@ -127,5 +129,7 @@ async def test_manager_phrase_becomes_a_handoff_the_queue_accepts():
 
     assert entry["conversation_id"] == "c1"
     assert entry["reason"] == "customer_request"
+    assert entry["handler"] == "supervisor"
+    assert entry["frustrated"] is True
     assert "unacceptable" in entry["summary"].lower()
     await redis.aclose()

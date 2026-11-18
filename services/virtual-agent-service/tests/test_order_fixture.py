@@ -1,9 +1,13 @@
 """Handlers answer from the checked-in fixture, not from order-service."""
 
+from pathlib import Path
+
 import httpx
 from app.agents import AgentTask, OrderTrackingAgent, ReturnsRefundsAgent
 from app.clients import ORDER_FIXTURE, DomainClient
 from engagehub_common.config import ServiceSettings
+
+DEMO_PHRASES = (Path(__file__).resolve().parents[3] / "demo" / "phrases.txt").read_text().splitlines()
 
 
 def _refuse_network(request: httpx.Request) -> httpx.Response:
@@ -23,11 +27,19 @@ async def _close(client: DomainClient) -> None:
     await client.products.aclose()
 
 
+def test_demo_phrases_are_the_december_script():
+    assert DEMO_PHRASES == [
+        "Where is order 1001?",
+        "I also want to return it.",
+        "This is unacceptable, get me a manager.",
+    ]
+
+
 async def test_where_is_order_1001_comes_back_delivered_from_the_fixture():
     client = _client()
     try:
         reply = await OrderTrackingAgent(client).respond(
-            AgentTask("acme", "cust-acme-dana", "Where is order 1001?", "m1")
+            AgentTask("acme", "cust-acme-dana", DEMO_PHRASES[0], "m1")
         )
     finally:
         await _close(client)
@@ -40,7 +52,7 @@ async def test_i_also_want_to_return_it_opens_the_fixture_order():
     client = _client()
     try:
         reply = await ReturnsRefundsAgent(client).respond(
-            AgentTask("acme", "cust-acme-dana", "I also want to return it.", "m2")
+            AgentTask("acme", "cust-acme-dana", DEMO_PHRASES[1], "m2")
         )
     finally:
         await _close(client)

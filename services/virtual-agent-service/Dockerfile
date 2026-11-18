@@ -8,6 +8,7 @@ RUN pip install -r /tmp/base.txt && useradd --uid 10001 --no-create-home engageh
 COPY libs/common /tmp/common
 RUN pip install --no-deps /tmp/common && rm -rf /tmp/common
 COPY services/virtual-agent-service/app /srv/app
+COPY services/virtual-agent-service/fixtures /srv/fixtures
 USER 10001
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

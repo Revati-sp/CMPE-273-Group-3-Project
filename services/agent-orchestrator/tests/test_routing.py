@@ -140,6 +140,19 @@ async def test_human_request_publishes_escalation(setup):
     escalations = kafka.events(ESCALATIONS)
     assert escalations[0].event_type == EventType.ESCALATION_REQUESTED
     assert escalations[0].payload["reason"] == "customer_request"
+    assert escalations[0].payload["summary"]
+
+
+async def test_unacceptable_get_me_a_manager_escalates_with_summary(setup):
+    orchestrator, kafka, _, _ = setup
+    await orchestrator.handle_event(message("This is unacceptable, get me a manager."), RECORD)
+    escalations = kafka.events(ESCALATIONS)
+    assert len(escalations) == 1
+    payload = escalations[0].payload
+    assert escalations[0].event_type == EventType.ESCALATION_REQUESTED
+    assert payload["reason"] == "customer_request"
+    assert "unacceptable" in payload["summary"].lower()
+    assert kafka.events(agent_task_topic("complaint_management")) == []
 
 
 @pytest.mark.parametrize("workflow", ["human_active", "waiting_human", "resolved"])

@@ -129,9 +129,10 @@ class Orchestrator:
         }
         if decision.escalate:
             ESCALATION_METRIC.labels(event.tenant_id, decision.reason.split(":")[0]).inc()
+            summary = await self.llm.summarize([{"role": "customer", "text": event.payload.get("text", "")}])
             await self.producer.publish(
                 ESCALATIONS,
-                self._derived(event, "escalate", EventType.ESCALATION_REQUESTED, details),
+                self._derived(event, "escalate", EventType.ESCALATION_REQUESTED, {**details, "summary": summary}),
             )
         else:
             await self.producer.publish(

@@ -81,7 +81,8 @@ _NEGATIVE = {
 _POSITIVE = {"thanks": 1, "thank you": 2, "great": 2, "awesome": 2, "perfect": 2, "love": 2, "helpful": 2}
 
 _HUMAN_REQUEST = re.compile(
-    r"\b(human|real person|live agent|real agent|representative|speak (to|with) (someone|a person|an agent)"
+    r"\b(human|real person|live agent|real agent|representative|manager"
+    r"|speak (to|with) (someone|a person|an agent)"
     r"|talk (to|with) (someone|a person|an agent)|agente humano|persona real)\b",
     re.I,
 )

@@ -62,6 +62,7 @@ x-redis: &redis
 x-virtual-agent: &virtual-agent
   <<: *service
   image: engagehub/virtual-agent-service:local
+  build: { context: ., dockerfile: services/virtual-agent-service/Dockerfile }
   depends_on:
     <<: *service-deps
 
@@ -209,6 +210,7 @@ services:
   session-service:
     <<: *service
     image: engagehub/session-service:local
+    build: { context: ., dockerfile: services/session-service/Dockerfile }
     environment:
       <<: *service-env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_session
@@ -270,7 +272,6 @@ services:
   # ---------- The eight virtual agents: one image, one independent consumer group each ----------
   va-product-advisor:
     <<: *virtual-agent
-    build: { context: ., dockerfile: services/virtual-agent-service/Dockerfile }
     deploy: { replicas: 2 }  # Two workers, so the chaos demo can show a consumer-group rebalance.
     environment: { <<: *service-env, AGENT_TYPE: product_advisor }
   va-order-tracking:

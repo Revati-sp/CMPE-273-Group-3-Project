@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from engagehub_common.events import new_id, utcnow
-from sqlalchemy import JSON, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 STATUS_AVAILABLE = "available"
@@ -52,6 +52,8 @@ class QueueEntry(Base):
     sentiment: Mapped[float] = mapped_column(Float, default=0.0)
     tier: Mapped[str] = mapped_column(String(16), default="standard")
     summary: Mapped[str] = mapped_column(Text, default="")
+    handler: Mapped[str] = mapped_column(String(64), default="")
+    frustrated: Mapped[bool] = mapped_column(Boolean, default=False)
     offered_to: Mapped[str | None] = mapped_column(String(128), nullable=True)
     offered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_to: Mapped[str | None] = mapped_column(String(128), nullable=True)

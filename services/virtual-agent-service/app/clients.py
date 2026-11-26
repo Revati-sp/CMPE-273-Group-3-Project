@@ -10,7 +10,7 @@ from engagehub_common.auth import service_token
 from engagehub_common.config import ServiceSettings
 from engagehub_common.resilience import CircuitBreaker
 
-# Checked-in stand-in for order-service until that API is on main.
+# Checked-in orders for tests that must not call order-service. The running service does not load this.
 ORDER_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "orders.json"
 _ORDER_FIELDS = (
     "id",

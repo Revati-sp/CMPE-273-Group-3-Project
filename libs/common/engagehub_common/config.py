@@ -47,6 +47,10 @@ class ServiceSettings(BaseSettings):
     offer_timeout_seconds: int = 30
     average_handle_seconds: int = 240
 
+    # Customer reply stream (chat-service)
+    cursor_ttl_seconds: int = 7 * 24 * 3600
+    enable_dev_endpoints: bool = False  # exposes POST /dev/fake-replies for the demo screen
+
     @field_validator("jwt_secret")
     @classmethod
     def _secret_is_strong(cls, value: str) -> str:

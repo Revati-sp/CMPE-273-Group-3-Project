@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-service
+  labels:
+    app.kubernetes.io/name: chat-service
+spec:
+  selector:
+    app.kubernetes.io/name: chat-service
+  ports:
+    - { name: http, port: 8000, targetPort: http }
+  # No session affinity: any pod can resume any conversation from Redis and PostgreSQL.

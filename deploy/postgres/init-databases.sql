@@ -9,3 +9,4 @@ CREATE DATABASE eh_order;
 CREATE DATABASE eh_notification;
 CREATE DATABASE eh_analytics;
 CREATE DATABASE eh_audit;
+CREATE DATABASE eh_chat;

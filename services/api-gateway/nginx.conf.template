@@ -66,7 +66,7 @@ server {
     }
 
     # Operational endpoints are for Prometheus and Kubernetes, not the internet.
-    location ~ ^/api/[a-z]+/(metrics|healthz|readyz|docs|redoc|openapi\.json)$ {
+    location ~ ^/api/[a-z]+/(metrics|health|healthz|ready|readyz|docs|redoc|openapi\.json)$ {
         return 404;
     }
 
@@ -87,6 +87,18 @@ server {
     }
 
     location = /ws {
+        limit_conn ws_limit 200;
+        set $chat_upstream chat-service;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_pass http://$chat_upstream:8000;
+    }
+
+    # Customer reply stream: /ws/customer/{conversation_id}. Any chat pod can serve any
+    # conversation, so a reconnect after a pod failure simply lands on a healthy one.
+    location ^~ /ws/customer/ {
         limit_conn ws_limit 200;
         set $chat_upstream chat-service;
         proxy_set_header Upgrade $http_upgrade;

@@ -1,0 +1,21 @@
+# Non-secret settings. Kafka, Redis Cluster and PostgreSQL are expected to run in the
+# cluster already (for example the Strimzi, Bitnami Redis Cluster and CloudNativePG
+# operators). Change these addresses to match your installation.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-service-config
+data:
+  SERVICE_NAME: chat-service
+  LOG_LEVEL: INFO
+  KAFKA_BOOTSTRAP_SERVERS: kafka-0.kafka-headless:9092,kafka-1.kafka-headless:9092,kafka-2.kafka-headless:9092
+  KAFKA_REPLICATION_FACTOR: "3"
+  KAFKA_MIN_INSYNC_REPLICAS: "2"
+  REDIS_MODE: cluster
+  REDIS_NODES: redis-cluster-0.redis-cluster-headless:6379,redis-cluster-1.redis-cluster-headless:6379,redis-cluster-2.redis-cluster-headless:6379
+  SESSION_GRPC_TARGET: session-service:50051
+  OTEL_ENABLED: "true"
+  OTEL_ENDPOINT: http://jaeger-collector:4318/v1/traces
+  CURSOR_TTL_SECONDS: "604800"
+  ENABLE_DEV_ENDPOINTS: "false"
+  SEED_DEMO_DATA: "false"

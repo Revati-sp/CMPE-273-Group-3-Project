@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-service
+  labels:
+    app.kubernetes.io/name: chat-service
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chat-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # never drop below two serving pods during a rollout
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chat-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      # Time for preStop, closing sockets with 1012 and finishing in-flight Kafka records.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: chat-service
+      containers:
+        - name: chat-service
+          image: engagehub/chat-service
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8000 }
+          envFrom:
+            - configMapRef: { name: chat-service-config }
+            - secretRef: { name: chat-service-secrets }
+          env:
+            - name: POD_NAME  # shown to clients in connection_ack, and used as the Kafka client ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: "1", memory: 384Mi }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 36  # allow up to 3 minutes for Kafka, Redis and PostgreSQL
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            # /ready checks Redis, PostgreSQL and the consumer tasks. An unready pod gets
+            # no new WebSockets; clients reconnect through the Service to a ready one.
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              # Wait until endpoints controllers drop this pod, so no new sockets arrive.
+              # uvicorn then receives SIGTERM, closes sockets with 1012 and stops the consumers.
+              exec: { command: ["sleep", "5"] }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}

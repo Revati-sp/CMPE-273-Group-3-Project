@@ -1,0 +1,24 @@
+# Creates chat.replies, chat.replies.dlq, chat.replies.delivery and the other topics.
+# Idempotent: existing topics are left alone.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: provision
+          image: engagehub/chat-service
+          command: ["python", "-m", "engagehub_common.messaging.provision"]
+          envFrom:
+            - configMapRef: { name: chat-service-config }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }

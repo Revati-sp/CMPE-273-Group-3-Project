@@ -161,10 +161,16 @@ class ChatCore:
 
     # Conversation creation
     async def create_conversation(
-        self, principal: Principal, *, subject: str, language: str, correlation_id: str
+        self,
+        principal: Principal,
+        *,
+        subject: str,
+        language: str,
+        correlation_id: str,
+        conversation_id: str | None = None,
     ) -> SessionState:
         state = SessionState(
-            conversation_id=new_id(),
+            conversation_id=conversation_id or new_id(),
             session_id=new_id(),
             tenant_id=principal.tenant_id,
             customer_id=principal.subject,

@@ -1,0 +1,34 @@
+# Requires the ingress-nginx controller.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-service-websocket
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /ws/customer
+            pathType: Prefix
+            backend:
+              service: { name: chat-service, port: { name: http } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-service-api
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api/chat(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service: { name: chat-service, port: { name: http } }

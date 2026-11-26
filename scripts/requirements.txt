@@ -1,0 +1,4 @@
+# For running the scripts in this folder from the host: pip install -r scripts/requirements.txt
+aiokafka==0.15.0
+httpx==0.28.1
+websockets==17.4

@@ -231,9 +231,8 @@ def test_reply_defaults():
 
 
 def test_one_process_can_host_several_agents_with_independent_consumer_groups(monkeypatch):
-    from fastapi.testclient import TestClient
-
     from app.main import create_app
+    from fastapi.testclient import TestClient
 
     monkeypatch.setenv("AGENT_TYPE", "faq,supervisor")
     runtime = memory_runtime("virtual-agent-service", db=False)
@@ -249,3 +248,52 @@ def test_unknown_agent_type_is_refused_at_startup(monkeypatch):
     monkeypatch.setenv("AGENT_TYPE", "faq,nonsense")
     with pytest.raises(ValueError):
         create_app(runtime=memory_runtime("virtual-agent-service", db=False))
+
+
+async def test_reply_is_published_to_agent_responses_for_chat_to_commit(worker_for):
+    from engagehub_common.topics import AGENT_RESPONSES
+
+    await worker_for("order_tracking").handle_task(task_event(), RECORD)
+    reply = worker_for.kafka.events(CHAT_MESSAGES)[0]
+    records = worker_for.kafka.records(AGENT_RESPONSES)
+    assert len(records) == 1 and records[0].key == b"c1"
+    response = worker_for.kafka.events(AGENT_RESPONSES)[0]
+    assert response.event_type == EventType.AGENT_RESPONSE
+    assert response.message_id == reply.message_id  # same message in both logs
+    assert (response.tenant_id, response.customer_id, response.correlation_id) == ("acme", "u1", "corr-9")
+    assert response.payload["text"] == reply.payload["text"]
+    assert response.payload["sender"] == {"type": "virtual_agent", "id": "order_tracking", "name": "Order Tracking"}
+
+
+async def test_redelivered_task_republishes_an_identical_agent_response(worker_for):
+    from engagehub_common.topics import AGENT_RESPONSES
+
+    worker = worker_for("faq")
+    event = task_event("what's the warranty")
+    await worker.handle_task(event, RECORD)
+    await worker.handle_task(event, RECORD)
+    responses = worker_for.kafka.events(AGENT_RESPONSES)
+    assert len(responses) == 2
+    assert responses[0].event_id == responses[1].event_id and responses[0].message_id == responses[1].message_id
+
+
+async def test_failed_agent_response_publish_is_retried_without_a_second_reply(worker_for):
+    from engagehub_common.topics import AGENT_RESPONSES
+
+    worker = worker_for("faq")
+    event = task_event("what's the warranty")
+    real_publish = worker.producer.publish
+    calls = {"n": 0}
+
+    async def flaky(topic, envelope):
+        if topic == AGENT_RESPONSES and calls["n"] == 0:
+            calls["n"] += 1
+            raise ConnectionError("broker hiccup")
+        return await real_publish(topic, envelope)
+
+    worker.producer.publish = flaky
+    with pytest.raises(ConnectionError):
+        await worker.handle_task(event, RECORD)  # the consumer runner would retry this
+    await worker.handle_task(event, RECORD)
+    assert len(worker_for.kafka.events(CHAT_MESSAGES)) == 1
+    assert len(worker_for.kafka.events(AGENT_RESPONSES)) == 1

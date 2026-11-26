@@ -12,6 +12,12 @@ NOTIFICATIONS = "chat.notifications"
 ANALYTICS = "chat.analytics"
 AUDIT_EVENTS = "chat.audit-events"
 DEAD_LETTER = "chat.dead-letter-events"
+# Customer reply stream: fake or real virtual-agent replies, sequenced into PostgreSQL.
+CHAT_REPLIES = "chat.replies"
+CHAT_REPLIES_DLQ = "chat.replies.dlq"
+CHAT_REPLIES_DELIVERY = "chat.replies.delivery"  # sequenced messages fanned out to every chat pod
+# Real virtual-agent responses (EventEnvelope, event_type agent_response), keyed by conversation ID.
+AGENT_RESPONSES = "agent.responses"
 
 AGENT_TYPES = (
     "product_advisor",
@@ -49,5 +55,9 @@ TOPIC_SPECS: tuple[TopicSpec, ...] = (
     TopicSpec(ANALYTICS, 6, 7 * _DAY_MS),
     TopicSpec(AUDIT_EVENTS, 6, 30 * _DAY_MS),
     TopicSpec(DEAD_LETTER, 3, 30 * _DAY_MS),
+    TopicSpec(CHAT_REPLIES, 12, 14 * _DAY_MS),
+    TopicSpec(CHAT_REPLIES_DLQ, 3, 30 * _DAY_MS),
+    TopicSpec(CHAT_REPLIES_DELIVERY, 12, 1 * _DAY_MS),
+    TopicSpec(AGENT_RESPONSES, 12, 14 * _DAY_MS),
     *(TopicSpec(agent_task_topic(a), 6, 3 * _DAY_MS) for a in AGENT_TYPES),
 )

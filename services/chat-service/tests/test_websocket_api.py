@@ -14,7 +14,7 @@ from tests.conftest import KafkaBackedHistory
 def client():
     redis = fakeredis.FakeAsyncRedis(decode_responses=True)
     assert isinstance(redis, fakeredis.aioredis.FakeRedis)
-    runtime = memory_runtime("chat-service", redis=redis, db=False)
+    runtime = memory_runtime("chat-service", redis=redis)
     app = create_app(runtime=runtime, history=KafkaBackedHistory(runtime.kafka, SessionStore(redis)), pod_name="pod-1")
     with TestClient(app) as test_client:
         yield test_client

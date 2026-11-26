@@ -1,0 +1,12 @@
+{
+  "event_id": "poison-schema-1",
+  "event_type": "not_a_real_event",
+  "conversation_id": "c1",
+  "tenant_id": "acme",
+  "customer_id": "u1",
+  "correlation_id": "corr-poison-schema",
+  "producer_service": "agent-orchestrator",
+  "payload": {
+    "text": "this agent task is intentionally invalid"
+  }
+}

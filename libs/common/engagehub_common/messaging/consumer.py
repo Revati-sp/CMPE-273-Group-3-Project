@@ -156,9 +156,21 @@ class ConsumerRunner:
         try:
             event = self.parser(record.value)
         except (ValidationError, ValueError) as exc:
-            log.warning("schema validation failed", extra={"topic": record.topic, "group": self.group})
             count = exc.error_count() if isinstance(exc, ValidationError) else 1
-            await self._dead_letter(record, f"schema_validation: {count} errors", None)
+            reason = f"schema_validation: {count} errors"
+            peeked = _peek_ids(record.value)
+            log.warning(
+                "schema validation failed",
+                extra={
+                    "topic": record.topic,
+                    "group": self.group,
+                    "event_id": peeked.get("event_id"),
+                    "correlation_id": peeked.get("correlation_id"),
+                    "reason": reason,
+                    "retry_count": 0,
+                },
+            )
+            await self._dead_letter(record, reason, None, retry_count=0)
             EVENTS_CONSUMED.labels(self.group, record.topic, "invalid").inc()
             return
 
@@ -200,7 +212,16 @@ class ConsumerRunner:
             try:
                 await self.handler(event, record)
             except NonRetryableError as exc:
-                await self._dead_letter(record, f"non_retryable: {exc}", event)
+                log.error(
+                    "handler failed; dead-lettering",
+                    extra={
+                        "event_id": event.event_id,
+                        "correlation_id": event.correlation_id,
+                        "reason": f"non_retryable: {exc}",
+                        "retry_count": 0,
+                    },
+                )
+                await self._dead_letter(record, f"non_retryable: {exc}", event, retry_count=0)
                 EVENTS_CONSUMED.labels(self.group, record.topic, "dead_letter").inc()
                 return
             except self.transient_errors as exc:
@@ -219,12 +240,30 @@ class ConsumerRunner:
                 transient_attempt += 1
             except Exception as exc:
                 if attempt == self.max_attempts - 1:
-                    log.exception("handler failed; dead-lettering", extra={"event_id": event.event_id})
-                    await self._dead_letter(record, f"handler_failed: {exc!r}", event)
+                    reason = f"handler_failed: {exc!r}"
+                    log.exception(
+                        "handler failed; dead-lettering",
+                        extra={
+                            "event_id": event.event_id,
+                            "correlation_id": event.correlation_id,
+                            "reason": reason,
+                            "retry_count": attempt,
+                        },
+                    )
+                    await self._dead_letter(record, reason, event, retry_count=attempt)
                     EVENTS_CONSUMED.labels(self.group, record.topic, "dead_letter").inc()
                     return
                 EVENT_RETRIES.labels(self.group, record.topic).inc()
-                log.warning("handler failed; retrying", extra={"event_id": event.event_id, "attempt": attempt + 1})
+                log.warning(
+                    "handler failed; retrying",
+                    extra={
+                        "event_id": event.event_id,
+                        "correlation_id": event.correlation_id,
+                        "reason": repr(exc),
+                        "attempt": attempt + 1,
+                        "retry_count": attempt + 1,
+                    },
+                )
                 await asyncio.sleep(backoff_delay(attempt, self.retry_base_seconds))
                 attempt += 1
             else:
@@ -249,18 +288,29 @@ class ConsumerRunner:
             except Exception:
                 log.warning("dedupe mark unavailable", extra={"group": self.group})
 
-    async def _dead_letter(self, record: Record, reason: str, event) -> None:
+    async def _dead_letter(self, record: Record, reason: str, event, *, retry_count: int = 0) -> None:
+        peeked = _peek_ids(record.value)
+        event_id = getattr(event, "event_id", None) or peeked.get("event_id")
+        correlation_id = getattr(event, "correlation_id", None) or peeked.get("correlation_id")
         if self.producer is None:
-            log.error("dropping undeliverable record: no producer for DLQ", extra={"reason": reason})
+            log.error(
+                "dropping undeliverable record: no producer for DLQ",
+                extra={
+                    "reason": reason,
+                    "event_id": event_id,
+                    "correlation_id": correlation_id,
+                    "retry_count": retry_count,
+                },
+            )
             return
         coordinates = f"{record.topic}:{record.partition}:{record.offset}:{self.group}"
         letter = EventEnvelope(
             event_id=derive_event_id(coordinates, "dlq"),
             event_type=EventType.DEAD_LETTER,
-            conversation_id=getattr(event, "conversation_id", None),
-            tenant_id=getattr(event, "tenant_id", None) or "unknown",
-            customer_id=getattr(event, "customer_id", None),
-            correlation_id=getattr(event, "correlation_id", None) or derive_event_id(coordinates, "corr"),
+            conversation_id=getattr(event, "conversation_id", None) or peeked.get("conversation_id"),
+            tenant_id=getattr(event, "tenant_id", None) or peeked.get("tenant_id") or "unknown",
+            customer_id=getattr(event, "customer_id", None) or peeked.get("customer_id"),
+            correlation_id=correlation_id or derive_event_id(coordinates, "corr"),
             producer_service=self.service_name,
             payload={
                 "reason": reason,
@@ -274,7 +324,15 @@ class ConsumerRunner:
         # A failed DLQ publish propagates, so the offset stays uncommitted and nothing is lost.
         log.error(
             "event dead-lettered",
-            extra={"reason": reason, "topic": record.topic, "offset": record.offset, "dlq": self.dead_letter_topic},
+            extra={
+                "reason": reason,
+                "topic": record.topic,
+                "offset": record.offset,
+                "dlq": self.dead_letter_topic,
+                "event_id": event_id,
+                "correlation_id": letter.correlation_id,
+                "retry_count": retry_count,
+            },
         )
         await self.producer.publish(self.dead_letter_topic, letter)
 
@@ -284,3 +342,16 @@ def _safe_decode(raw: bytes):
         return json.loads(raw)
     except (ValueError, UnicodeDecodeError):
         return raw.decode("utf-8", errors="replace")
+
+
+def _peek_ids(raw: bytes) -> dict[str, str]:
+    """Read identity fields from a record that failed schema validation."""
+    decoded = _safe_decode(raw)
+    if not isinstance(decoded, dict):
+        return {}
+    found = {}
+    for key in ("event_id", "correlation_id", "conversation_id", "tenant_id", "customer_id"):
+        value = decoded.get(key)
+        if isinstance(value, str) and value:
+            found[key] = value
+    return found

@@ -1,51 +1,73 @@
 # EngageHub: A Fault-Tolerant Hybrid AI–Human Customer Engagement Platform with Reliable Live-Chat Migration
 
+## Implementation status
+
+The platform runs locally with Docker Compose. This repository does not deploy it to a cloud. The only Kubernetes manifests are for Chat Service, in `deploy/k8s/chat-service`.
+
+### Implemented
+
+- Docker Compose stack: NGINX API gateway, React frontend, the FastAPI services, a three-broker Kafka cluster, a Redis Cluster, PostgreSQL, Prometheus, Grafana, and Jaeger.
+- Authentication, tenants, customers, products, orders, returns, notifications, analytics, and audit logs.
+- Eight virtual-agent workers. The eighth handler is the **Supervisor**, which asks a clarifying question and owns the handoff workflow. The other seven are Product Advisor, Order Tracking, Returns and Refunds, Billing, Technical Support, FAQ, and Complaint Management. Replies come from rules and the product and order services. The configured provider is the rules provider.
+- Support chat on WebSocket `/ws`. A customer message is published to Kafka topic `chat.messages`. The agent orchestrator consumes that topic, classifies the text, and either assigns one virtual agent or escalates to the human queue. Agent tasks travel on `chat.agent-tasks.<agent>`. Product and order calls from an agent are REST.
+- A human-agent queue for two agents: accept, reject, transfer, resolve, notes, and a handoff summary.
+- Live session state in Redis. Conversation history is read from session-service over gRPC.
+- The customer reply stream on `/ws/customer`: a sequenced PostgreSQL log, a Redis acknowledgement cursor, replay after reconnect, and dead-letter handling. Virtual-agent replies on `agent.responses` are delivered on this socket.
+- Chat Service recovery in Docker Compose. Two chat replicas run behind the gateway. Stopping one replica, or stopping `chat-service` and starting it again, reconnects the customer and replays messages they have not acknowledged.
+- Chat Service Kubernetes manifests that can be rendered with Kustomize. Applying them requires a cluster that already has Kafka, Redis, and PostgreSQL. This repository does not apply them.
+
+### Future work
+
+- Kubernetes manifests for the services other than Chat Service, and a deployment of the whole platform to a cluster or a cloud.
+- Continuous integration. GitHub Actions is named in the technology list below. This repository has no workflow files.
+- Load-test results for concurrent users, response latency, and recovery time.
+- Publishing customer messages typed on `/ws/customer` to the agent orchestrator. The support-chat socket `/ws` already does this. The reply-stream socket stores those messages in its own log.
+- Several virtual agents collaborating on one customer turn. Routing currently chooses one specialist, or a human agent.
+- A generative model behind the agent `respond` interface.
+
 ## Abstract
 
-Enterprise customer support platforms need to manage a lot of concurrent conversations at the same time. Customers may however lose their chat connection, messages or conversation history in the case of a server crash, network problem or system update. Our proposed project Engagehub is a fault tolerant, multi tenant customer support platform which combines eight virtual AI agents and two human support agents. It helps customers search for products, receive recommendations, track orders, communicate through real-time chat, and also receive human assistance when needed.
+EngageHub is a multi-tenant customer-support platform with eight virtual agents and two human agents. Customers search products, track orders, chat in real time, and reach a human agent when the virtual agent escalates.
 
-EngageHub is expected to be developed as a group of independent microservices. These services will use Docker containers and be managed by Kubernetes. Apache Kafka will help the services to exchange events such as chat messages, agent assignments, escalations, notifications and analytics data. Redis Cluster will store active chat sessions, agent assignments, message status and other information needed to recover a conversation.
+The services run as separate containers in Docker Compose. Kafka carries chat messages, agent tasks, escalations, notifications, and analytics. Redis Cluster holds the live session: assigned agent, workflow state, acknowledgements, and typing status. PostgreSQL holds customers, tenants, products, orders, conversation history, and the sequenced reply log.
 
-The main goal of the project is to support reliable live-chat migration when a Chat Service pod fails. Each message will have an unique ID and sequence number which will help the system preserve message order and prevent duplicate messages. If a Chat Service pod stops working, another healthy pod will restore the session from Redis and replay missing messages from Kafka. Kubernetes will restart failed pods and support service scaling. Prometheus, Grafana, OpenTelemetry and Jaeger will be used to monitor the system and trace requests across the services. The project will be evaluated using concurrent users, service failures, message recovery, agent escalation, response latency and recovery time.
+The reliability goal is live-chat migration when a Chat Service process stops. Each message has an ID and a sequence number. Another Chat Service replica restores the session from Redis and replays only the messages the customer has not acknowledged. Prometheus, Grafana, and Jaeger are part of the local stack. What is running, and what is still ahead, is listed under Implementation status.
 
+## Business value
 
-## Business Value
+- **24/7 customer support:** The virtual agents handle product questions, order tracking, returns, billing, technical support, FAQs, and complaints. The Supervisor clarifies the request or hands the conversation to a human agent.
+- **Faster issue resolution:** The orchestrator sends each support-chat message to one specialist, or to the human queue.
+- **Reduced operational cost:** Routine questions stay with a virtual agent. Human agents take sensitive, uncertain, or escalated cases.
+- **More than one chat replica:** Docker Compose runs two Chat Service replicas. The gateway reconnects a customer to the replica that is still up. Autoscaling is specified only in the Chat Service Kubernetes manifests, and those manifests are not deployed from this repository.
+- **Reliable customer conversations:** Session state in Redis, the Kafka log, and replay keep an acknowledged conversation going after a Chat Service restart.
+- **Handoff context:** Sentiment and a short summary go with an escalation, so the human agent sees why the conversation was transferred.
+- **Multi-tenant separation:** Tenants share the infrastructure. Customer and conversation records stay scoped to a tenant.
 
-- **24/7 customer support:** Specialized AI agents can handle product questions, order tracking, returns, billing, technical support, FAQs, complaints, and customer feedback at any time.
-- **Faster issue resolution:** Intelligent routing directs each customer request to the appropriate AI agent or human support agent, reducing response time and unnecessary transfers.
-- **Reduced operational cost:** AI agents handle routine questions, allowing human agents to focus on complex, sensitive, or escalated cases.
-- **Scalable customer service:** Kubernetes can automatically scale chat and support services during traffic increases such as product launches or holiday sales.
-- **Reliable customer conversations:** Replicated session state, Kafka event storage, and message replay allow conversations to recover when a service or pod fails.
-- **Better AI-to-human handoff:** Sentiment detection and conversation summaries give human agents the necessary context without requiring customers to repeat their issue.
-- **Improved customer satisfaction:** Faster responses, reliable conversations, and better routing can reduce abandoned chats and improve customer retention.
-- **Multi-tenant business potential:** The platform can support multiple businesses using shared infrastructure while keeping their customer and conversation data logically separated.
+**Why session recovery matters:** A dropped conversation can mean a lost sale or an unresolved complaint. EngageHub stores each live conversation as durable state, so a Chat Service restart can continue it.
 
-The main business value of EngageHub is reliable, scalable customer engagement. Even when a service fails, the platform is designed to preserve conversation context and continue supporting the customer.
+## Architecture
 
-**Why reliable session recovery matters:** For an enterprise, every dropped conversation can mean a lost sale or an unresolved complaint. Most chat platforms treat WebSocket connections as disposable, so any pod failure or deployment interrupts customers. EngageHub treats each live conversation as **durable, recoverable state**. This supports fault-tolerant operation and reduces the impact of service failures during deployments or unexpected crashes.
-
-## Proposed Architecture Diagram
+The diagram is the system that Docker Compose runs. It is not a picture of a Kubernetes cluster or a cloud deployment.
 
 ```mermaid
 flowchart TB
-    Client["Customer Web / Mobile App"]
-    HumanUI["Human Agent Console"]
+    Client["Customer web app"]
+    HumanUI["Human agent console"]
 
-    subgraph K8S["Kubernetes Cluster (Docker containers)"]
-        Gateway["API Gateway<br/>NGINX Ingress"]
+    subgraph Local["Local stack (Docker Compose)"]
+        Gateway["API Gateway<br/>NGINX"]
         Auth["Authentication Service"]
         Tenant["Customer and Tenant Service"]
 
-        subgraph ChatLayer["Chat Gateway / WebSocket Layer (replicated pods)"]
-            Chat1["Chat Pod 1"]
-            Chat2["Chat Pod 2"]
-            ChatN["Chat Pod N"]
+        subgraph ChatLayer["Chat Service (two replicas)"]
+            Chat1["Replica 1"]
+            Chat2["Replica 2"]
         end
 
-        Session["Session Management Service"]
-        Orch["Virtual Agent Orchestrator<br/>AI Supervisor and Routing"]
+        Session["Session Service"]
+        Orch["Agent Orchestrator"]
 
-        subgraph VA["8 Specialized Virtual Agents"]
+        subgraph VA["8 virtual-agent workers"]
             A1["Product Advisor"]
             A2["Order Tracking"]
             A3["Returns and Refunds"]
@@ -53,18 +75,18 @@ flowchart TB
             A5["Technical Support"]
             A6["FAQ"]
             A7["Complaint Management"]
-            A8["Customer Feedback"]
+            A8["Supervisor"]
         end
 
-        Queue["Human Agent and Queue Service<br/>(2 Human Agents)"]
+        Queue["Human Agent and Queue Service<br/>(2 human agents)"]
         Product["Product Service"]
         Order["Order Service"]
         Notif["Notification Service"]
         Analytics["Analytics Service"]
         Audit["Audit Service"]
 
-        Redis[("Redis Cluster<br/>Replicated Session State")]
-        Kafka[["Apache Kafka Cluster<br/>Partitioned by Conversation ID"]]
+        Redis[("Redis Cluster<br/>live session state")]
+        Kafka[["Apache Kafka<br/>key = conversation ID"]]
         DB[("PostgreSQL")]
     end
 
@@ -72,21 +94,21 @@ flowchart TB
     HumanUI -->|"WebSocket"| Gateway
     Gateway -->|"REST"| Auth
     Gateway -->|"REST"| Tenant
-    Gateway -->|"WebSocket"| ChatLayer
+    Gateway -->|"WebSocket /ws and /ws/customer"| ChatLayer
 
-    ChatLayer -->|"gRPC"| Session
-    Session <-->|"read / write state"| Redis
-    ChatLayer -->|"gRPC"| Orch
-    Orch -->|"gRPC"| VA
-    VA -->|"REST / gRPC"| Product
-    VA -->|"REST / gRPC"| Order
+    ChatLayer -->|"gRPC history"| Session
+    Session <-->|"live session state"| Redis
+    ChatLayer -.->|"chat.messages from /ws"| Kafka
+    Kafka -.->|"customer messages"| Orch
+    Orch -.->|"chat.agent-tasks.*"| VA
+    VA -->|"REST"| Product
+    VA -->|"REST"| Order
     Product --> DB
     Order --> DB
     Tenant --> DB
 
-    ChatLayer -.->|"publish chat events"| Kafka
-    Orch -.->|"escalation events"| Kafka
-    Kafka -.->|"replay missing events"| ChatLayer
+    Orch -.->|"escalations"| Kafka
+    Kafka -.->|"replay and fan-out"| ChatLayer
     Kafka -.->|"escalations"| Queue
     Kafka -.->|"consume"| Notif
     Kafka -.->|"consume"| Analytics
@@ -94,51 +116,56 @@ flowchart TB
     Queue -->|"WebSocket"| HumanUI
 ```
 
-**Legend:** Solid arrows show **synchronous** communication (REST, gRPC, WebSocket). Dotted arrows show **asynchronous** event communication through **Apache Kafka**.
+**Legend:** Solid arrows are synchronous calls (REST, gRPC, WebSocket). Dotted arrows are Kafka.
 
-**How the architecture works:**
+**How the running system behaves:**
 
-1. Customers connect through the **API Gateway**, which authenticates requests and routes WebSocket connections to one of several replicated **Chat Pods**.
-2. Each chat message will receive a unique message ID, conversation ID, sequence number, timestamp, tenant ID, and correlation ID. It will be published to **Kafka** using the conversation ID as the partition key, which preserves per-conversation ordering.
-3. The **Session Management Service** will store live session state in a **Redis Cluster**: assigned agent, workflow state, last acknowledged message ID, unacknowledged messages, and typing status.
-4. The **Virtual Agent Orchestrator**, acting as the AI supervisor and routing service, will route requests to the right specialized agent, coordinate multi-agent collaboration, and publish escalation events when a human agent is needed.
-5. **Failure recovery:** If a Chat Pod fails, Kubernetes will restart it and the gateway will reconnect the client to a healthy pod. The new pod will restore the session from Redis, read the last acknowledged message ID, and replay only the missing events from Kafka. Duplicates will be removed using message IDs and idempotency keys.
-6. **Notification, Analytics, and Audit** services will consume Kafka events independently through separate consumer groups, so a slow or failed consumer will never block live chat.
+1. The customer and the human agent connect through the NGINX gateway. Support chat is WebSocket `/ws`. The reply-stream demo is WebSocket `/ws/customer`.
+2. A message on `/ws` gets a message ID, conversation ID, sequence number, timestamp, tenant ID, and correlation ID. Chat Service publishes it to `chat.messages` with the conversation ID as the key.
+3. Session state for that conversation lives in Redis: assigned agent, workflow state, last acknowledgement, unacknowledged messages, and typing status. History reads go to session-service over gRPC.
+4. The orchestrator consumes `chat.messages` from `/ws`, picks one virtual agent, and publishes a task on that agent's topic. If the customer asks for a person, the topic is sensitive, the customer is repeatedly frustrated, or that agent has no worker, it publishes an escalation instead. The eighth handler is the Supervisor, the worker that asks for clarification.
+5. If one Chat Service replica stops, the gateway sends the reconnect to the other replica. That replica reads the session from Redis and replays messages after the last acknowledgement. Message IDs and idempotency keys drop duplicates. The same recovery is what `docker compose stop chat-service` and `docker compose start chat-service` demonstrate. Kubernetes restart of Chat Service is specified in `deploy/k8s/chat-service` and is not a deployment this repository performs.
+6. Notification, Analytics, and Audit each consume Kafka in their own consumer group.
 
-## Proposed Technology Used
+**Reply stream, separately:** Messages the customer types on `/ws/customer` are appended to the reply log and are not published to `chat.messages`. They do not reach the orchestrator. Agent replies that virtual agents publish on `agent.responses` do travel the other way and show up on `/ws/customer`. Connecting those customer messages to the orchestrator is future work.
 
-| Technology | Purpose |
-|---|---|
-| **React** | Frontend for the customer chat application, human agent console, and analytics dashboard |
-| **FastAPI** | Backend framework for implementing the microservices |
-| **REST and gRPC** | REST for client-facing APIs and gRPC for typed service-to-service communication |
-| **WebSockets** | Real-time, bidirectional communication for live customer support chats |
-| **Apache Kafka** | Durable event streaming for chat messages, escalations, notifications, analytics, and audit events. The conversation ID is used as the partition key to preserve message order, and retained events enable message replay after failures |
-| **Redis Cluster** | Fast, replicated storage for active session state, agent assignment, and idempotency keys |
-| **PostgreSQL** | Persistent storage for customers, tenants, products, orders, conversations, and audit records |
-| **Docker** | Containerizes each microservice and its dependencies |
-| **Kubernetes** | Provides service discovery, deployment, scaling, rolling updates, and automatic pod recovery |
-| **NGINX Ingress** | Routes HTTP and WebSocket traffic to the appropriate services |
-| **Prometheus and Grafana** | Collects and visualizes system metrics such as latency, active sessions, consumer lag, and pod health |
-| **OpenTelemetry and Jaeger** | Provides distributed tracing across microservices and Kafka-based workflows |
-| **GitHub Actions** | Automates testing, building, and Docker image creation through continuous integration |
+## Technology in this repository
 
-### Distributed-Systems Patterns Used
+| Technology | Where it is used | Status |
+|---|---|---|
+| **React** | Customer chat, human-agent console, admin analytics, reply-stream demo | Running in Docker Compose |
+| **FastAPI** | Backend services | Running in Docker Compose |
+| **REST** | Gateway to services, and virtual agents to product-service and order-service | Running in Docker Compose |
+| **gRPC** | History reads against session-service | Running in Docker Compose |
+| **WebSockets** | `/ws` support chat and `/ws/customer` reply stream | Running in Docker Compose |
+| **Apache Kafka** | Chat messages, agent tasks, escalations, notifications, analytics, audit, reply delivery | Running in Docker Compose |
+| **Redis Cluster** | Live session state, reply-stream cursors, idempotency | Running in Docker Compose |
+| **PostgreSQL** | Tenants, customers, products, orders, history, reply log, audit | Running in Docker Compose |
+| **Docker Compose** | The local stack | This is how the system runs |
+| **NGINX** | API gateway container in Compose | Running in Docker Compose |
+| **Prometheus, Grafana, Jaeger** | Metrics and traces in the local stack | Running in Docker Compose |
+| **Kubernetes** | Manifests for Chat Service only (`deploy/k8s/chat-service`) | Not applied. No other service has manifests |
+| **Cloud** | — | No cloud account, cluster, or deployment is in this repository |
+| **GitHub Actions** | — | Not in this repository |
 
-- **Event-driven architecture:** Services communicate through Kafka events for loose coupling.
-- **Microservices:** Independently deployable and scalable services.
-- **Kafka partitions and consumer groups:** Per-conversation ordering and parallel event processing.
-- **Replicated session state:** Redis Cluster keeps live chat state available across pod failures.
-- **Message replay:** Missing events are replayed from Kafka after reconnection.
-- **Idempotent processing:** Message IDs and idempotency keys prevent duplicate processing and duplicate user-visible messages.
-- **Retry with exponential backoff:** Transient failures are handled gracefully.
-- **Dead-letter queues:** Events that keep failing are isolated for later inspection.
-- **Circuit breakers:** Failing services are isolated to prevent cascading failures.
-- **Timeouts:** Slow dependencies cannot block live conversations.
-- **Kubernetes self-healing:** Failed pods are detected and restarted automatically.
-- **Horizontal scaling:** Chat and agent services scale with traffic.
-- **Distributed tracing:** Requests are tracked end to end across services and Kafka.
-- **Fault-injection testing:** Pods are deliberately killed and networks disrupted to validate reliable live-chat migration.
+### Distributed-systems behavior that is implemented
+
+- Kafka topics, partitions keyed by conversation ID, and separate consumer groups.
+- Redis session state that another Chat Service replica can read.
+- Replay of messages after the customer's last acknowledgement.
+- Idempotent writes using message IDs and idempotency keys.
+- Retries with backoff, then a dead-letter topic for events that still fail. A poison agent task is dead-lettered after a bounded number of attempts.
+- Circuit breakers and timeouts on calls to product, order, customer, and session-service.
+- Two Chat Service replicas in Compose, with reconnect when one stops.
+- OpenTelemetry traces exported to Jaeger when the local stack is up.
+
+### Distributed-systems behavior that is future work
+
+- Kubernetes self-healing and horizontal pod autoscaling for the platform. The Chat Service manifests describe probes, a PodDisruptionBudget, and an autoscaler from 2 to 6 pods. They are not applied here, and the other services have no manifests.
+- A cloud deployment.
+- GitHub Actions for test and image builds.
+- Load and fault-injection results beyond the Chat Service restart demo and the automated tests.
+- Multi-agent collaboration on one turn, and a generative model in place of the rules provider.
 
 ---
 
@@ -442,7 +469,7 @@ To show a pod failover rather than a full restart, stop one of the two replicas 
 
 ### Kubernetes
 
-Manifests are in `deploy/k8s/chat-service` (Kustomize):
+Chat Service is the only service with Kubernetes manifests. They are in `deploy/k8s/chat-service` (Kustomize). Rendering or applying them is optional and requires a cluster you already operate. This repository does not deploy Chat Service, or any other service, to a cloud.
 
 ```bash
 cp deploy/k8s/chat-service/secret.env.example deploy/k8s/chat-service/secret.env   # set real values
@@ -525,5 +552,6 @@ scripts/tests           5 passed
 - The cursor is per customer, not per device: two devices of one customer share it.
 - If Redis is down and the client sends no `last_received_sequence`, the whole history is replayed (and deduplicated by the client).
 - Every pod reads every message on `chat.replies.delivery`. That is simple and fine for this scale; very large deployments would route by conversation instead.
-- Virtual agents publish each reply to both `chat.messages` (the platform chat flow) and `agent.responses` (this log), so a reply exists in two logs with the same `message_id` but independent sequence numbers. Customer messages sent on `/ws/customer` are stored in this log only and do not reach the agent orchestrator yet.
-- The Kubernetes manifests assume Kafka, Redis Cluster and PostgreSQL are already installed in the cluster.
+- Virtual agents publish each reply to both `chat.messages` (the support-chat flow) and `agent.responses` (this log), so a reply exists in two logs with the same `message_id` and independent sequence numbers.
+- Customer messages on `/ws` are published to `chat.messages`, and the agent orchestrator consumes that topic. Customer messages on `/ws/customer` are stored in this log only. Forwarding them to the orchestrator is future work, listed under Implementation status.
+- The Chat Service manifests assume Kafka, Redis Cluster, and PostgreSQL are already installed in a cluster. No other service has a manifest, and this repository does not deploy the platform to a cloud.

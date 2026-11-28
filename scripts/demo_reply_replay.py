@@ -60,6 +60,9 @@ class CustomerSocket:
         if ack.get("type") != "connection_ack":
             raise DemoFailure(f"expected connection_ack, got {ack}")
         replay = await self.recv_until("replay_completed")
+        if ack.get("handover"):
+            # Another pod held the session: it ends with handover_completed after the replay.
+            replay += await self.recv_until("handover_completed")
         return ack, replay
 
     async def recv(self, timeout: float = 10.0) -> dict:  # noqa: ASYNC109

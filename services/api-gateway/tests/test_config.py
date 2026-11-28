@@ -25,6 +25,10 @@ def test_operational_endpoints_are_blocked_before_api_routes():
     assert CONFIG.index("(metrics|health|healthz|ready|readyz") < CONFIG.index("location ~ ^/api/(?<api_name>")
 
 
+def test_internal_endpoints_are_not_exposed():
+    assert CONFIG.index("location ~ ^/api/[a-z]+/internal/") < CONFIG.index("location ~ ^/api/(?<api_name>")
+
+
 def test_customer_reply_stream_socket_is_proxied_with_upgrade():
     block = CONFIG[CONFIG.index("location ^~ /ws/customer/") :]
     block = block[: block.index("}")]

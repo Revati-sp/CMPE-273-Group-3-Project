@@ -70,9 +70,18 @@ spec:
             failureThreshold: 2
           lifecycle:
             preStop:
-              # Wait until endpoints controllers drop this pod, so no new sockets arrive.
-              # uvicorn then receives SIGTERM, closes sockets with 1012 and stops the consumers.
-              exec: { command: ["sleep", "5"] }
+              # 1. /internal/drain makes /ready fail, so the endpoints controller removes the pod
+              #    and new sockets go to other replicas. 2. Wait for that to propagate.
+              # 3. Kubernetes then sends SIGTERM: the pod sends server_draining, records each
+              #    session as drained, closes sockets with 1012 and stops its consumers.
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - >-
+                    python -c "import urllib.request as u;
+                    u.urlopen(u.Request('http://127.0.0.1:8000/internal/drain', method='POST'), timeout=2)" ;
+                    sleep 8
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

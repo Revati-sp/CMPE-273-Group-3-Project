@@ -50,6 +50,9 @@ class ServiceSettings(BaseSettings):
     # Customer reply stream (chat-service)
     cursor_ttl_seconds: int = 7 * 24 * 3600
     enable_dev_endpoints: bool = False  # exposes POST /dev/fake-replies for the demo screen
+    session_snapshot_ttl_seconds: int = 24 * 3600
+    session_lease_seconds: int = 15  # an owner that stops renewing is presumed gone after this
+    session_lease_renew_seconds: float = 5.0
 
     @field_validator("jwt_secret")
     @classmethod

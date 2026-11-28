@@ -217,7 +217,7 @@ describe("reconnecting", () => {
     expect(state().status).toBe("reconnecting");
   });
 
-  it.each([4401, 4404])("stops on terminal close %i", (code) => {
+  it.each([4401, 4404, 4409])("stops on terminal close %i", (code) => {
     const { current, sockets, state } = setup();
     current().onclose?.({ code });
     vi.advanceTimersByTime(60_000);
@@ -230,5 +230,125 @@ describe("reconnecting", () => {
     handshake({ source: "client" });
     expect(state().cursorSource).toBe("client");
     expect(state().error).toMatch(/durable log/);
+  });
+});
+
+
+describe("session migration", () => {
+  it("shows handover started and completed, with the session version and replay range", () => {
+    const { current, handshake, sockets, state } = setup();
+    handshake();
+    [1, 2, 3].forEach((n) => current().receive(msg(n)));
+    current().onclose?.({ code: 1006 });
+    vi.advanceTimersByTime(400);
+    expect(sockets).toHaveLength(2);
+    current().onopen?.({});
+    current().receive({
+      type: "connection_ack", pod: "chat-service-2", reconnected: true, handover: true, session_version: 7,
+      cursor_source: "redis", cursor: { last_acknowledged_sequence: 1, last_message_id: "", updated_at: "" },
+      workflow_state: "ACTIVE", assigned_agent_id: "product_advisor", typing_status: "customer_typing",
+    });
+    current().receive({ type: "handover_started", old_pod: "chat-service-1", new_pod: "chat-service-2", reason: "owner_unreachable", session_version: 7 });
+    expect(state().status).toBe("handover");
+    expect(state().handover).toMatchObject({ phase: "started", oldPod: "chat-service-1", newPod: "chat-service-2" });
+    current().receive({ type: "replay_started", from_sequence: 2, to_sequence: 4, count: 3 });
+    [2, 3, 4].forEach((n) => current().receive({ ...msg(n), replayed: true }));
+    current().receive({ type: "replay_completed", last_sequence: 4 });
+    expect(state().status).toBe("handover");
+    current().receive({
+      type: "handover_completed", old_pod: "chat-service-1", new_pod: "chat-service-2",
+      replayed_from_sequence: 2, replayed_to_sequence: 4, replayed_count: 3, session_version: 8, recovery_ms: 12,
+    });
+    const s = state();
+    expect(s.status).toBe("connected");
+    expect(s.handover).toMatchObject({ phase: "completed", replayedFrom: 2, replayedTo: 4, replayedCount: 3 });
+    expect(s.sessionVersion).toBe(8);
+    expect(seqs(s)).toEqual([1, 2, 3, 4]);
+    expect(s.duplicatesIgnored).toBe(2);
+    expect(s.replayedTotal).toBe(3);
+    expect(s.agent).toBe("product_advisor");
+    expect(s.typingStatus).toBe("customer_typing");
+  });
+
+  it("measures recovery time from the drop to the end of the replay", () => {
+    let clock = 1000;
+    const sockets: FakeSocket[] = [];
+    let state = {} as ReplayState;
+    const client = new ReplayClient({
+      url: "ws://x", token: "t", conversationId: "c", random: () => 0.5, now: () => clock,
+      onState: (s) => (state = s),
+      socketFactory: () => { const s = new FakeSocket(); sockets.push(s); return s; },
+    });
+    client.connect();
+    sockets[0].onopen?.({});
+    sockets[0].receive({ type: "connection_ack", pod: "a", cursor_source: "redis", cursor: null });
+    sockets[0].receive({ type: "replay_completed", last_sequence: 0 });
+    expect(state.recoveryMs).toBeNull();
+    sockets[0].onclose?.({ code: 1012 });
+    clock += 750;
+    vi.advanceTimersByTime(400);
+    sockets[1].onopen?.({});
+    sockets[1].receive({ type: "connection_ack", pod: "b", cursor_source: "redis", cursor: null });
+    sockets[1].receive({ type: "replay_completed", last_sequence: 0 });
+    expect(state.recoveryMs).toBe(750);
+  });
+
+  it("detects a gap in live messages and asks the server to resync", () => {
+    const { current, handshake, state } = setup();
+    handshake();
+    current().receive(msg(1));
+    current().receive(msg(2));
+    current().receive(msg(4));
+    expect(state().gapsDetected).toBe(1);
+    vi.advanceTimersByTime(1600);
+    expect(current().ofType("resync")).toEqual([{ type: "resync", after_sequence: 2 }]);
+  });
+
+  it("does not resync when the missing message arrives in time", () => {
+    const { current, handshake } = setup();
+    handshake();
+    current().receive(msg(1));
+    current().receive(msg(3));
+    current().receive(msg(2));
+    vi.advanceTimersByTime(1600);
+    expect(current().ofType("resync")).toEqual([]);
+  });
+
+  it("reconnects when heartbeats go unanswered (half-open socket during a partition)", () => {
+    const { current, handshake, sockets, state } = setup();
+    handshake();
+    vi.advanceTimersByTime(15_000);
+    expect(current().ofType("ping")).toHaveLength(1);
+    vi.advanceTimersByTime(15_000);
+    expect(state().status).toBe("reconnecting");
+    vi.advanceTimersByTime(400);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("answered heartbeats keep the connection", () => {
+    const { current, handshake, sockets } = setup();
+    handshake();
+    vi.advanceTimersByTime(15_000);
+    current().receive({ type: "pong" });
+    vi.advanceTimersByTime(15_000);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("resends an unconfirmed manual ack after reconnecting", () => {
+    const { client, current, handshake, state } = setup(false);
+    handshake();
+    current().receive(msg(1));
+    client.acknowledge(state().messages[0]);
+    current().onclose?.({ code: 1006 });
+    vi.advanceTimersByTime(400);
+    handshake({ cursor: 0, replay: [msg(1)], reconnected: true });
+    expect(current().ofType("ack")).toEqual([{ type: "ack", sequence_number: 1, message_id: "message-1" }]);
+  });
+
+  it("sends typing state", () => {
+    const { client, current, handshake } = setup();
+    handshake();
+    client.setTyping(true);
+    expect(current().ofType("typing")).toEqual([{ type: "typing", is_typing: true }]);
   });
 });

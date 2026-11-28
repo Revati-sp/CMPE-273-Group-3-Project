@@ -35,6 +35,7 @@ from engagehub_common.metrics import (
     DUPLICATES_SUPPRESSED,
     EVENT_RETRIES,
     EVENTS_CONSUMED,
+    KAFKA_CONSUMER_LAG,
 )
 from engagehub_common.resilience import backoff_delay
 from engagehub_common.telemetry import extract_context, tracer
@@ -150,6 +151,8 @@ class ConsumerRunner:
             offsets[(record.topic, record.partition)] = record.offset + 1
         if offsets and self.commit:
             await self.consumer.commit(offsets)
+        for (topic, partition), lag in (getattr(self.consumer, "lag", None) or {}).items():
+            KAFKA_CONSUMER_LAG.labels(self.group, topic, str(partition)).set(lag)
         return len(records)
 
     async def _process(self, record: Record) -> None:

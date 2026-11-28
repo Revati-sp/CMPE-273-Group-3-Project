@@ -120,6 +120,8 @@ class MessageLog:
             row = ChatMessage(
                 message_id=message_id,
                 conversation_id=conversation_id,
+                tenant_id=conversation.tenant_id,
+                customer_id=conversation.customer_id,
                 sequence_number=sequence,
                 sender_type=sender_type,
                 sender_id=sender_id,

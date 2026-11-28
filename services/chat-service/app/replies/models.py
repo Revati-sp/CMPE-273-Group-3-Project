@@ -38,6 +38,8 @@ class ChatMessage(ReplyBase):
     id: Mapped[int] = mapped_column(Integer().with_variant(BigInteger, "postgresql"), primary_key=True)
     message_id: Mapped[str] = mapped_column(String(64))
     conversation_id: Mapped[str] = mapped_column(String(64))
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    customer_id: Mapped[str] = mapped_column(String(128), default="")
     sequence_number: Mapped[int] = mapped_column(BigInteger)
     sender_type: Mapped[str] = mapped_column(String(32))
     sender_id: Mapped[str] = mapped_column(String(128))
@@ -46,3 +48,24 @@ class ChatMessage(ReplyBase):
     correlation_id: Mapped[str] = mapped_column(String(64), default="")
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# Columns added after the table first shipped. create_all() does not alter existing tables,
+# so on PostgreSQL they are added (idempotently) and backfilled at startup.
+_MIGRATIONS = (
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64) NOT NULL DEFAULT ''",
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS customer_id VARCHAR(128) NOT NULL DEFAULT ''",
+    "UPDATE chat_messages AS m SET tenant_id = c.tenant_id, customer_id = c.customer_id "
+    "FROM chat_conversations AS c WHERE m.conversation_id = c.conversation_id AND m.tenant_id = ''",
+)
+
+
+async def migrate(db) -> None:
+    from sqlalchemy import text
+
+    if db.dialect != "postgresql":
+        return
+    async with db.engine.begin() as conn:
+        await conn.execute(text("SELECT pg_advisory_xact_lock(7219005)"))  # one replica at a time
+        for statement in _MIGRATIONS:
+            await conn.execute(text(statement))

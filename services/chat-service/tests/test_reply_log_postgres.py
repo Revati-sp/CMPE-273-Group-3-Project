@@ -63,3 +63,48 @@ async def test_same_message_id_racing_into_two_conversations_is_rejected_once(me
     )  # fmt: skip
     assert sum(isinstance(o, MessageIdConflict) for o in outcomes) == 1
     assert await message_log.latest_sequence("conv-a") + await message_log.latest_sequence("conv-b") == 1
+
+
+async def test_messages_carry_tenant_and_customer(message_log):
+    await message_log.register("conv-a", "acme", "cust-1")
+    await append(message_log, "conv-a", 1)
+    from app.replies.models import ChatMessage
+    from sqlalchemy import select
+
+    async with message_log.db.session() as session:
+        row = await session.scalar(select(ChatMessage))
+    assert (row.tenant_id, row.customer_id) == ("acme", "cust-1")
+
+
+async def test_migration_adds_and_backfills_columns_on_an_old_table():
+    """A database created before tenant_id and customer_id existed is upgraded in place."""
+    from app.replies.models import migrate
+    from sqlalchemy import text
+
+    db = Database(URL)
+    async with db.engine.begin() as conn:
+        await conn.run_sync(ReplyBase.metadata.drop_all)
+        await conn.execute(text(
+            "CREATE TABLE chat_conversations (conversation_id VARCHAR(64) PRIMARY KEY, tenant_id VARCHAR(64), "
+            "customer_id VARCHAR(128), last_sequence BIGINT, created_at TIMESTAMPTZ)"
+        ))  # fmt: skip
+        await conn.execute(text(
+            "CREATE TABLE chat_messages (id BIGSERIAL PRIMARY KEY, message_id VARCHAR(64), "
+            "conversation_id VARCHAR(64), "
+            "sequence_number BIGINT, sender_type VARCHAR(32), sender_id VARCHAR(128), sender_name VARCHAR(128), "
+            "content TEXT, correlation_id VARCHAR(64), timestamp TIMESTAMPTZ, created_at TIMESTAMPTZ)"
+        ))  # fmt: skip
+        await conn.execute(text("INSERT INTO chat_conversations VALUES ('c1', 'acme', 'cust-1', 1, now())"))
+        await conn.execute(text(
+            "INSERT INTO chat_messages (message_id, conversation_id, sequence_number, sender_type, sender_id, "
+            "sender_name, content, correlation_id, timestamp, created_at) "
+            "VALUES ('m1', 'c1', 1, 'virtual_agent', 'a', '', 'old row', '', now(), now())"
+        ))  # fmt: skip
+    await migrate(db)
+    await migrate(db)  # idempotent
+    async with db.engine.connect() as conn:
+        row = (await conn.execute(text("SELECT tenant_id, customer_id FROM chat_messages"))).one()
+    assert tuple(row) == ("acme", "cust-1")
+    async with db.engine.begin() as conn:
+        await conn.run_sync(ReplyBase.metadata.drop_all)
+    await db.dispose()

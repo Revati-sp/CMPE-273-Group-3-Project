@@ -20,6 +20,8 @@ from engagehub_common.topics import (
     CHAT_REPLIES_DLQ,
     ESCALATIONS,
     SESSION_EVENTS,
+    SESSION_STATE,
+    SESSION_STATE_DLQ,
 )
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, ValidationError
@@ -33,7 +35,10 @@ from app.replies.cursor import CursorStore
 from app.replies.hub import ReplyHub
 from app.replies.log import ConversationOwnedElsewhere, MessageLog
 from app.replies.models import ReplyBase
+from app.replies.models import migrate as migrate_reply_log
 from app.replies.schemas import ID_PATTERN, SequencedMessage, VirtualAgentReplyProduced
+from app.replies.session import SessionSnapshotStore
+from app.replies.session_state import SessionStatePublisher, SessionStateTable, SessionStateUpdated
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +143,7 @@ def create_app(runtime: Runtime | None = None, history=None, pod_name: str | Non
 
     async def setup(app: FastAPI, rt: Runtime) -> None:
         await rt.db.create_schema(ReplyBase)
+        await migrate_reply_log(rt.db)
         store = SessionStore(rt.redis, settings.session_ttl_seconds)
         client = history or GrpcHistoryClient(settings.session_grpc_target, settings.jwt_secret, settings.service_name)
         core = ChatCore(settings, store, rt.producer, client, pod_name=pod_name)
@@ -155,7 +161,7 @@ def create_app(runtime: Runtime | None = None, history=None, pod_name: str | Non
         rt.shutdown.append(core.shutdown)
         if history is None:
             rt.shutdown.append(client.close)
-        setup_reply_stream(app, rt, pod_name or settings.pod_name)
+        setup_reply_stream(app, rt, pod_name or settings.pod_name, platform_sessions=store)
 
     app = create_service_app(
         "EngageHub Chat Service", settings, runtime=runtime, kafka=True, redis=True, db=True, setup=setup
@@ -165,10 +171,22 @@ def create_app(runtime: Runtime | None = None, history=None, pod_name: str | Non
     return app
 
 
-def setup_reply_stream(app: FastAPI, rt: Runtime, pod: str) -> None:
-    """chat.replies -> Chat Consumer -> PostgreSQL log -> delivery fan-out -> customer sockets."""
+def setup_reply_stream(app: FastAPI, rt: Runtime, pod: str, platform_sessions: SessionStore | None = None) -> None:
+    """chat.replies and agent.responses -> Chat Consumer -> PostgreSQL log -> fan-out -> customer sockets,
+    with versioned session snapshots in Redis, mirrored to the compacted chat.session-state topic."""
+    settings = rt.settings
     message_log = MessageLog(rt.db)
-    hub = ReplyHub(message_log, CursorStore(rt.redis, rt.settings.cursor_ttl_seconds), pod)
+    state_table = SessionStateTable()
+    hub = ReplyHub(
+        message_log,
+        CursorStore(rt.redis, settings.cursor_ttl_seconds),
+        pod,
+        sessions=SessionSnapshotStore(rt.redis, settings.session_snapshot_ttl_seconds, settings.session_lease_seconds),
+        state_table=state_table,
+        publisher=SessionStatePublisher(rt.producer),
+        platform=platform_sessions,
+    )
+    state_table.on_newer = hub.on_session_state
     app.state.reply_log = message_log
     app.state.reply_hub = hub
     # One consumer group across all pods: each reply is sequenced exactly once.
@@ -202,5 +220,24 @@ def setup_reply_stream(app: FastAPI, rt: Runtime, pod: str) -> None:
         parser=SequencedMessage.parse,
         dead_letter_topic=CHAT_REPLIES_DLQ,
     )
+    # Every pod materialises the compacted session-state topic from the beginning (no group),
+    # as the fallback when Redis is down and to fence sockets that a newer claim superseded.
+    rt.add_consumer(
+        [SESSION_STATE],
+        None,
+        state_table.handle,
+        dedupe=False,
+        offset_reset="earliest",
+        commit=False,
+        parser=SessionStateUpdated.parse,
+        dead_letter_topic=SESSION_STATE_DLQ,
+    )
+    rt.background.append(asyncio.create_task(hub.lease_loop(settings.session_lease_renew_seconds)))
+
+    async def not_draining() -> None:
+        if hub.draining:
+            raise RuntimeError("draining")
+
+    rt.readiness.append(not_draining)
     # Close customer sockets first on shutdown, so clients start reconnecting at once.
     rt.shutdown.insert(0, hub.shutdown)

@@ -4,7 +4,8 @@ Keys (no hash tags: each operation touches one key, so it is Redis Cluster safe)
 
     chat:cursor:{conversation_id}:{customer_id}     JSON cursor, advanced only on ack
     chat:delivered:{conversation_id}:{customer_id}  highest sequence sent to the customer
-    chat:session:{conversation_id}:{customer_id}    last connection, used to detect reconnects
+
+The session snapshot (``chat:session:...``) is managed by ``app.replies.session``.
 
 All three expire after ``ttl`` seconds without activity. The cursor is a fast
 position marker, not message storage: the PostgreSQL log holds the messages.
@@ -59,10 +60,6 @@ class CursorStore:
     def _delivered_key(conversation_id: str, customer_id: str) -> str:
         return f"chat:delivered:{conversation_id}:{customer_id}"
 
-    @staticmethod
-    def _session_key(conversation_id: str, customer_id: str) -> str:
-        return f"chat:session:{conversation_id}:{customer_id}"
-
     async def _call(self, coro):
         try:
             return await coro
@@ -73,11 +70,14 @@ class CursorStore:
         raw = await self._call(self.redis.get(self.cursor_key(conversation_id, customer_id)))
         return Cursor.model_validate_json(raw) if raw else None
 
-    async def advance(self, conversation_id: str, customer_id: str, sequence: int, message_id: str) -> Cursor:
+    async def advance(
+        self, conversation_id: str, customer_id: str, sequence: int, message_id: str, *, session_version: int = 0
+    ) -> Cursor:
         value = json.dumps(
             {
                 "last_acknowledged_sequence": sequence,
                 "last_message_id": message_id,
+                "session_version": session_version,
                 "updated_at": utcnow().isoformat().replace("+00:00", "Z"),
             }
         )
@@ -92,11 +92,3 @@ class CursorStore:
 
     async def delivered(self, conversation_id: str, customer_id: str) -> int:
         return int(await self._call(self.redis.get(self._delivered_key(conversation_id, customer_id))) or 0)
-
-    async def mark_connected(self, conversation_id: str, customer_id: str, pod: str) -> dict | None:
-        """Record this connection. Returns the previous one, if any (that means a reconnect)."""
-        value = json.dumps({"pod": pod, "connected_at": utcnow().isoformat()})
-        previous = await self._call(
-            self.redis.set(self._session_key(conversation_id, customer_id), value, ex=self.ttl, get=True)
-        )
-        return json.loads(previous) if previous else None

@@ -222,6 +222,8 @@ services:
       <<: *service-env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-engagehub}:${POSTGRES_PASSWORD}@postgres:5432/eh_chat
       ENABLE_DEV_ENDPOINTS: ${ENABLE_DEV_ENDPOINTS:-true}
+      SESSION_LEASE_SECONDS: ${SESSION_LEASE_SECONDS:-15}
+      SESSION_LEASE_RENEW_SECONDS: ${SESSION_LEASE_RENEW_SECONDS:-5}
 
   session-service:
     <<: *service

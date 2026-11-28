@@ -72,6 +72,8 @@ class KafkaEventConsumer:
             max_poll_interval_ms=120_000,
             metadata_max_age_ms=30_000,
         )
+        # {(topic, partition): records behind the high watermark}, refreshed on each poll.
+        self.lag: dict[tuple[str, int], int] = {}
 
     async def start(self) -> None:
         await self._consumer.start()
@@ -86,6 +88,9 @@ class KafkaEventConsumer:
             records.extend(
                 Record(tp.topic, tp.partition, m.offset, m.key, m.value, tuple(m.headers or ())) for m in messages
             )
+            highwater = self._consumer.highwater(tp)
+            if messages and highwater is not None:
+                self.lag[(tp.topic, tp.partition)] = max(0, highwater - (messages[-1].offset + 1))
         return records
 
     async def commit(self, offsets: dict[tuple[str, int], int]) -> None:

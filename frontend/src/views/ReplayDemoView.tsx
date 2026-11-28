@@ -5,6 +5,7 @@ import { ReplayClient, type ReplayState } from "../replay/ReplayClient";
 const STATUS_TEXT: Record<string, string> = {
   idle: "Not connected",
   connecting: "Connecting…",
+  handover: "Handover in progress…",
   replaying: "Replaying missed messages…",
   connected: "Connected",
   reconnecting: "Reconnecting…",
@@ -103,16 +104,43 @@ export function ReplayDemoView({ session }: { session: Session }) {
     }
   }
 
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typing = useRef(false);
+
+  function onDraft(value: string) {
+    setDraft(value);
+    if (!typing.current) {
+      typing.current = true;
+      client.current?.setTyping(true);
+    }
+    if (typingTimer.current) clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => {
+      typing.current = false;
+      client.current?.setTyping(false);
+    }, 2000);
+  }
+
   function sendCustomerMessage(event: FormEvent) {
     event.preventDefault();
     if (!draft.trim()) return;
     client.current?.sendCustomerMessage(draft.trim());
     setDraft("");
+    if (typing.current) {
+      typing.current = false;
+      client.current?.setTyping(false);
+    }
   }
 
   const status = state?.status ?? "idle";
-  const connected = status === "connected" || status === "replaying";
-  const statusClass = status === "connected" ? "banner-good" : status === "reconnecting" || status === "replaying" ? "banner-warn" : status === "closed" ? "banner-bad" : "";
+  const connected = status === "connected" || status === "replaying" || status === "handover";
+  const statusClass =
+    status === "connected"
+      ? "banner-good"
+      : status === "reconnecting" || status === "replaying" || status === "handover"
+        ? "banner-warn"
+        : status === "closed"
+          ? "banner-bad"
+          : "";
 
   return (
     <div className="columns replay">
@@ -148,11 +176,25 @@ export function ReplayDemoView({ session }: { session: Session }) {
           <span className={`pill ${statusClass}`} role="status">{STATUS_TEXT[status]}</span>
         </header>
         {state?.error && <div className={`banner ${status === "closed" ? "banner-bad" : "banner-warn"}`} role="alert">{state.error}</div>}
-        {state?.lastReplay && state.reconnected && (
-          <div className="banner banner-good" role="status">
-            Reconnected{state.pod ? ` to ${state.pod.slice(0, 16)}` : ""}. Replayed {state.lastReplay.count} message(s)
-            {state.lastReplay.count ? ` (#${state.lastReplay.from}–#${state.lastReplay.to})` : ""} from the durable log.
+        {state?.handover?.phase === "started" && (
+          <div className="banner banner-warn" role="status">
+            Handover started: moving this conversation from {state.handover.oldPod.slice(0, 16)} to{" "}
+            {state.handover.newPod.slice(0, 16)} ({state.handover.reason.replaceAll("_", " ")}).
           </div>
+        )}
+        {state?.handover?.phase === "completed" ? (
+          <div className="banner banner-good" role="status">
+            Handover completed on {state.handover.newPod.slice(0, 16)}: replayed {state.handover.replayedCount} message(s)
+            {state.handover.replayedCount ? ` (#${state.handover.replayedFrom}–#${state.handover.replayedTo})` : ""}
+            {state.recoveryMs !== null ? ` in ${(state.recoveryMs / 1000).toFixed(1)} s` : ""}.
+          </div>
+        ) : (
+          state?.lastReplay && state.reconnected && state.status === "connected" && (
+            <div className="banner banner-good" role="status">
+              Reconnected{state.pod ? ` to ${state.pod.slice(0, 16)}` : ""}. Replayed {state.lastReplay.count} message(s)
+              {state.lastReplay.count ? ` (#${state.lastReplay.from}–#${state.lastReplay.to})` : ""} from the durable log.
+            </div>
+          )
         )}
         <ul className="chat-log" aria-live="polite">
           {!state?.messages.length && <li className="empty muted">{connected ? "No messages yet. Publish a fake reply." : "Connect to see messages."}</li>}
@@ -177,7 +219,14 @@ export function ReplayDemoView({ session }: { session: Session }) {
           })}
         </ul>
         <form className="chat-input" onSubmit={sendCustomerMessage}>
-          <input aria-label="Customer message" placeholder="Send a customer message" value={draft} onChange={(e) => setDraft(e.target.value)} disabled={!connected} maxLength={4000} />
+          <input
+            aria-label="Customer message"
+            placeholder="Send a customer message"
+            value={draft}
+            onChange={(e) => onDraft(e.target.value)}
+            disabled={!connected}
+            maxLength={4000}
+          />
           <button className="primary" disabled={!connected || !draft.trim()}>Send</button>
         </form>
       </main>
@@ -186,11 +235,18 @@ export function ReplayDemoView({ session }: { session: Session }) {
           <h2>Delivery state</h2>
           <dl className="facts">
             <dt>Last received sequence</dt><dd>{state?.lastReceivedSequence ?? 0}</dd>
-            <dt>Cursor (this socket)</dt><dd>{state?.cursor?.last_acknowledged_sequence ?? 0}</dd>
+            <dt>Last acknowledged sequence</dt><dd>{state?.cursor?.last_acknowledged_sequence ?? 0}</dd>
+            <dt>Session version</dt><dd>{state?.sessionVersion ?? 0}</dd>
             <dt>Messages shown</dt><dd>{state?.messages.length ?? 0}</dd>
+            <dt>Messages replayed</dt><dd>{state?.replayedTotal ?? 0}</dd>
             <dt>Duplicates ignored</dt><dd>{state?.duplicatesIgnored ?? 0}</dd>
+            <dt>Gaps detected</dt><dd>{state?.gapsDetected ?? 0}</dd>
             <dt>Reconnections</dt><dd>{state?.reconnections ?? 0}</dd>
-            {devMode && <><dt>Server pod</dt><dd className="mono">{state?.pod || "–"}</dd><dt>Cursor source</dt><dd>{state?.cursorSource || "–"}</dd></>}
+            <dt>Recovery time</dt><dd>{state?.recoveryMs != null ? `${(state.recoveryMs / 1000).toFixed(2)} s` : "–"}</dd>
+            <dt>Current pod</dt><dd className="mono">{state?.pod ? state.pod.slice(0, 16) : "–"}</dd>
+            {state?.agent && <><dt>Agent</dt><dd>{state.agent}</dd></>}
+            {state?.workflowState && <><dt>Workflow</dt><dd>{state.workflowState}</dd></>}
+            {devMode && <><dt>Cursor source</dt><dd>{state?.cursorSource || "–"}</dd></>}
           </dl>
         </section>
         <section className="card stack">

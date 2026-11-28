@@ -111,6 +111,10 @@ class InMemoryConsumer:
         await asyncio.sleep(0 if out else 0.002)
         return out
 
+    @property
+    def lag(self) -> dict[tuple[str, int], int]:
+        return {tp: len(self.kafka.logs[tp]) - position for tp, position in self.positions.items()}
+
     async def commit(self, offsets: dict[tuple[str, int], int]) -> None:
         for tp, offset in offsets.items():
             self.kafka.committed[(self.group, tp)] = offset

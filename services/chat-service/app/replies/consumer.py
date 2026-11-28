@@ -10,6 +10,7 @@ from asyncpg.exceptions import CannotConnectNowError, PostgresConnectionError
 from engagehub_common.events import EventEnvelope, EventType
 from engagehub_common.messaging.bus import EventProducer, PublishError, Record
 from engagehub_common.messaging.consumer import NonRetryableError
+from engagehub_common.telemetry import inject_headers
 from engagehub_common.topics import AGENT_RESPONSES, CHAT_REPLIES, CHAT_REPLIES_DELIVERY
 from sqlalchemy.exc import InterfaceError, OperationalError
 
@@ -37,7 +38,7 @@ async def publish_delivery(producer: EventProducer, message: SequencedMessage) -
         CHAT_REPLIES_DELIVERY,
         message.conversation_id.encode(),
         message.model_dump_json().encode(),
-        (("correlation_id", message.correlation_id.encode()),),
+        (("correlation_id", message.correlation_id.encode()), *inject_headers()),
     )
 
 
@@ -78,6 +79,7 @@ async def commit_message(
     context["sequence_number"] = result.message.sequence_number
     if result.duplicate:
         DUPLICATES_IGNORED.labels("consumer").inc()
+        log.info("kafka event redelivered", extra=context)
         log.info("duplicate message ignored", extra={**context, "stage": "consumer"})
     else:
         MESSAGES_APPENDED.inc()

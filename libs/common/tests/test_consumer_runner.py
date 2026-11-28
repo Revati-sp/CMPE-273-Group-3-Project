@@ -287,3 +287,20 @@ async def test_stopping_during_a_transient_outage_leaves_the_offset_uncommitted(
     await runner.stop()
     assert kafka.committed == {}
     assert kafka.events(DEAD_LETTER) == []
+
+
+async def test_consumer_lag_metric_is_reported_per_partition(kafka):
+    from prometheus_client import REGISTRY
+
+    async def handler(e, _):
+        pass
+
+    await publish(kafka, *(event(n=i) for i in range(5)))
+    runner = await make_runner(kafka, handler, group="lag-group")
+    runner.consumer.positions = {tp: 0 for tp in runner.consumer.positions}
+    await runner.process_once()
+    partition = str(kafka.partition_for(b"c1"))
+    value = REGISTRY.get_sample_value(
+        "engagehub_kafka_consumer_lag", {"group": "lag-group", "topic": TOPIC, "partition": partition}
+    )
+    assert value == 0  # everything consumed

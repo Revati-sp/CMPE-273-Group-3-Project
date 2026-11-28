@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.replies.consumer import TRANSIENT_ERRORS, publish_delivery
 from app.replies.cursor import CursorUnavailable
-from app.replies.hub import CustomerConnection, ReplyHub
+from app.replies.hub import ConnectionFenced, CustomerConnection, ReplyHub
 from app.replies.log import MessageLog
 from app.replies.metrics import CURSOR_UPDATES
 from app.replies.schemas import (
@@ -24,10 +24,13 @@ from app.replies.schemas import (
     CustomerMessageFrame,
     HelloFrame,
     PingFrame,
+    ResyncFrame,
     SenderType,
+    TypingFrame,
     VirtualAgentReplyProduced,
     customer_message_id,
 )
+from app.replies.session import SessionUnavailable
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -147,6 +150,38 @@ async def acknowledge(
     return {"conversation_id": conversation_id, "cursor": cursor.model_dump()}
 
 
+@router.get("/conversations/{conversation_id}/session")
+async def get_session(conversation_id: str, request: Request, principal: Principal = Depends(get_principal)) -> dict:
+    """The live session snapshot, falling back to the latest chat.session-state record."""
+    conversation = await _authorize(_log(request), principal, conversation_id)
+    hub = _hub(request)
+    try:
+        snapshot = await hub.sessions.get(conversation_id, conversation.customer_id)
+        source = "redis"
+    except SessionUnavailable:
+        snapshot, source = hub.state_table.get(conversation_id), "kafka_session_state"
+    if snapshot is None:
+        raise HTTPException(404, "no session snapshot")
+    return {
+        "source": source,
+        "key": hub.sessions.key(conversation_id, conversation.customer_id),
+        **snapshot.model_dump(),
+    }
+
+
+@router.post("/internal/drain", include_in_schema=False)
+async def drain(request: Request) -> dict:
+    """Called by the Kubernetes preStop hook: fail readiness so no new sockets arrive.
+
+    Accepted only from inside the pod. The gateway also blocks /internal/ paths.
+    """
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(403, "forbidden")
+    _hub(request).drain()
+    return {"draining": True}
+
+
 @router.post("/dev/fake-replies", status_code=202)
 async def publish_fake_replies(
     body: FakeReplyRequest,
@@ -205,13 +240,24 @@ async def customer_socket(websocket: WebSocket, conversation_id: str) -> None:
         await _close(websocket, CLOSE_NOT_FOUND, "conversation not found")
         return
 
-    conn = CustomerConnection(conversation_id, principal.subject, websocket.send_json, websocket.close)
+    if hub.draining:
+        # This pod is shutting down: send the client straight to another replica.
+        await _close(websocket, 1012, "service restarting")
+        return
+
+    conn = CustomerConnection(
+        conversation_id, principal.subject, websocket.send_json, websocket.close, tenant_id=principal.tenant_id
+    )
+    disconnect_reason = "connection_lost"
     try:
         await hub.open(conn, hello.last_received_sequence)
-        while True:
+        while not conn.closed:
             await _handle_frame(websocket, hub, conn, principal, await websocket.receive_json())
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as exc:
+        if exc.code in (1000, 1001):
+            disconnect_reason = "client_closed"
+    except ConnectionFenced:
+        pass  # a newer connection owns the session; the socket is already closed
     except TRANSIENT_ERRORS:
         log.warning("dependency failed during session", exc_info=True)
         await _error(websocket, "service_unavailable", True, "service unavailable, reconnect shortly")
@@ -219,7 +265,10 @@ async def customer_socket(websocket: WebSocket, conversation_id: str) -> None:
     except (ValueError, RuntimeError):
         await _close(websocket, 1003, "invalid frame")
     finally:
-        hub.forget(conn)
+        if conn.closed:
+            hub.forget(conn)
+        else:
+            await hub.disconnect(conn, disconnect_reason)
 
 
 async def _handle_frame(websocket, hub: ReplyHub, conn: CustomerConnection, principal: Principal, raw) -> None:
@@ -235,6 +284,8 @@ async def _handle_frame(websocket, hub: ReplyHub, conn: CustomerConnection, prin
             except CursorUnavailable:
                 await _error(websocket, "cursor_unavailable", True, "acknowledgement not saved, resend it")
                 return
+            except ConnectionFenced:
+                return
             CURSOR_UPDATES.inc()
             await conn.send({"type": "ack_confirmed", "conversation_id": conn.conversation_id, "cursor": cursor})
         elif frame_type == "customer_message":
@@ -242,6 +293,13 @@ async def _handle_frame(websocket, hub: ReplyHub, conn: CustomerConnection, prin
         elif frame_type == "ping":
             PingFrame.model_validate(raw)
             await conn.send({"type": "pong"})
+        elif frame_type == "typing":
+            try:
+                await hub.typing(conn, TypingFrame.model_validate(raw).is_typing)
+            except ConnectionFenced:
+                return
+        elif frame_type == "resync":
+            await hub.resync(conn, ResyncFrame.model_validate(raw).after_sequence)
         else:
             await _error(websocket, "invalid_frame", False, f"unsupported frame type: {frame_type}")
     except ValidationError as exc:

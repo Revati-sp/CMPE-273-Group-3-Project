@@ -33,10 +33,7 @@ async def provision(bootstrap_servers: str, replication_factor: int, min_insync:
                 name=spec.name,
                 num_partitions=spec.partitions,
                 replication_factor=replication_factor,
-                topic_configs={
-                    "retention.ms": str(spec.retention_ms),
-                    "min.insync.replicas": str(min_insync),
-                },
+                topic_configs=spec.configs(min_insync),
             )
             # The brokers accept connections before the controller quorum is ready.
             await retry_async(lambda t=topic: _create_topic(admin, t), attempts=60, base=1.0)

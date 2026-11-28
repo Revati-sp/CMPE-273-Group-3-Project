@@ -25,4 +25,9 @@ SEQUENCE_CONFLICTS = Counter(
 ROUTING_DECISIONS = Counter("engagehub_routing_decisions_total", "Routing outcomes", ["tenant", "agent", "intent"])
 ESCALATIONS = Counter("engagehub_escalations_total", "Escalations to a human", ["tenant", "reason"])
 HUMAN_QUEUE_DEPTH = Gauge("engagehub_human_queue_depth", "Conversations waiting for a human", ["tenant"])
+KAFKA_CONSUMER_LAG = Gauge(
+    "engagehub_kafka_consumer_lag",
+    "Records between the consumer position and the partition high watermark",
+    ["group", "topic", "partition"],
+)
 CIRCUIT_OPEN = Counter("engagehub_circuit_open_total", "Circuit breaker trips", ["dependency"])

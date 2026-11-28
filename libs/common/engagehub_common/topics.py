@@ -16,6 +16,9 @@ DEAD_LETTER = "chat.dead-letter-events"
 CHAT_REPLIES = "chat.replies"
 CHAT_REPLIES_DLQ = "chat.replies.dlq"
 CHAT_REPLIES_DELIVERY = "chat.replies.delivery"  # sequenced messages fanned out to every chat pod
+# Latest session snapshot per conversation. Compacted: holds state, not history.
+SESSION_STATE = "chat.session-state"
+SESSION_STATE_DLQ = "chat.session-state.dlq"
 # Real virtual-agent responses (EventEnvelope, event_type agent_response), keyed by conversation ID.
 AGENT_RESPONSES = "agent.responses"
 
@@ -42,6 +45,17 @@ class TopicSpec:
     name: str
     partitions: int
     retention_ms: int
+    cleanup_policy: str = "delete"  # "compact" keeps the latest record per key
+
+    def configs(self, min_insync: int) -> dict[str, str]:
+        configs = {"cleanup.policy": self.cleanup_policy, "min.insync.replicas": str(min_insync)}
+        if self.cleanup_policy == "compact":
+            # Compact promptly, and keep tombstones long enough for consumers to see them.
+            configs.update({"segment.ms": str(3_600_000), "min.cleanable.dirty.ratio": "0.1",
+                            "delete.retention.ms": str(_DAY_MS)})  # fmt: skip
+        else:
+            configs["retention.ms"] = str(self.retention_ms)
+        return configs
 
 
 _DAY_MS = 24 * 3600 * 1000
@@ -59,5 +73,7 @@ TOPIC_SPECS: tuple[TopicSpec, ...] = (
     TopicSpec(CHAT_REPLIES_DLQ, 3, 30 * _DAY_MS),
     TopicSpec(CHAT_REPLIES_DELIVERY, 12, 1 * _DAY_MS),
     TopicSpec(AGENT_RESPONSES, 12, 14 * _DAY_MS),
+    TopicSpec(SESSION_STATE, 12, 0, cleanup_policy="compact"),
+    TopicSpec(SESSION_STATE_DLQ, 3, 30 * _DAY_MS),
     *(TopicSpec(agent_task_topic(a), 6, 3 * _DAY_MS) for a in AGENT_TYPES),
 )

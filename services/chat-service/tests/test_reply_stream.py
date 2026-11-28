@@ -175,11 +175,18 @@ def connect(ws, **kwargs) -> tuple[dict, list[dict]]:
     hello(ws, **kwargs)
     ack = recv(ws)
     assert ack["type"] == "connection_ack", ack
-    return ack, recv_until(ws, "replay_completed")
+    frames = recv_until(ws, "replay_completed")
+    if ack.get("handover"):
+        frames += recv_until(ws, "handover_completed")  # a different pod held the session before
+    return ack, frames
 
 
 def seqs(frames):
     return [f["sequence_number"] for f in frames if f["type"] == "chat_message"]
+
+
+def frame_of(frames, frame_type):
+    return next(f for f in frames if f["type"] == frame_type)
 
 
 def ack(ws, sequence, message_id=""):
@@ -458,6 +465,8 @@ def test_redis_outage_falls_back_to_the_durable_log(stack, client):
             stack.publish(f"r{n}")
         frames = [recv(ws) for _ in range(3)]
         ack(ws, 1, frames[0]["message_id"])
+    table = client.app.state.reply_hub.state_table
+    wait_for(lambda: (table.get(CONV) is not None) and table.get(CONV).last_acknowledged_sequence == 1)
 
     stack.redis.down = True
     headers = auth_headers(**DANA)
@@ -470,7 +479,12 @@ def test_redis_outage_falls_back_to_the_durable_log(stack, client):
         error = ack(ws, 3, replay[1]["message_id"])
         assert error["code"] == "cursor_unavailable" and error["retryable"] is True
     with client.websocket_connect(f"/ws/customer/{CONV}") as ws:
-        connection_ack, replay = connect(ws)  # nothing known: replay everything, the client deduplicates
+        # The client sends nothing, but the compacted chat.session-state topic knows ack = 1.
+        connection_ack, replay = connect(ws)
+        assert connection_ack["cursor_source"] == "kafka_session_state" and seqs(replay) == [2, 3]
+    client.app.state.reply_hub.state_table.latest.clear()
+    with client.websocket_connect(f"/ws/customer/{CONV}") as ws:
+        connection_ack, replay = connect(ws)  # nothing known anywhere: replay everything, the client deduplicates
         assert connection_ack["cursor_source"] == "unavailable" and seqs(replay) == [1, 2, 3]
 
     stack.redis.down = False

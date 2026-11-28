@@ -51,6 +51,23 @@ def test_deployment_is_highly_available_and_drains_gracefully(resources):
     assert any(name.startswith("chat-service-secrets") for name in refs)
 
 
+def test_rolling_update_drains_before_termination(resources):
+    pod = resources[("Deployment", "chat-service")]["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    command = " ".join(container["lifecycle"]["preStop"]["exec"]["command"])
+    assert "/internal/drain" in command and "sleep" in command
+    assert container["startupProbe"]["httpGet"]["path"] == "/health"
+    strategy = resources[("Deployment", "chat-service")]["spec"]["strategy"]
+    assert strategy["type"] == "RollingUpdate" and strategy["rollingUpdate"]["maxSurge"] >= 1
+    # The grace period must cover the preStop pause plus closing sockets and consumers.
+    assert pod["terminationGracePeriodSeconds"] >= 8 + 15
+
+
+def test_lease_settings_are_configured(resources):
+    data = resources[("ConfigMap", "chat-service-config")]["data"]
+    assert int(data["SESSION_LEASE_SECONDS"]) > float(data["SESSION_LEASE_RENEW_SECONDS"]) * 2
+
+
 def test_autoscaler_and_disruption_budget_keep_two_pods(resources):
     assert resources[("HorizontalPodAutoscaler", "chat-service")]["spec"]["minReplicas"] >= 2
     assert resources[("PodDisruptionBudget", "chat-service")]["spec"]["minAvailable"] >= 1

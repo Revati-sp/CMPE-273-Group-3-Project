@@ -14,6 +14,7 @@ The platform runs locally with Docker Compose. This repository does not deploy i
 - Live session state in Redis. Conversation history is read from session-service over gRPC.
 - The customer reply stream on `/ws/customer`: a sequenced PostgreSQL log, a Redis acknowledgement cursor, replay after reconnect, and dead-letter handling. Virtual-agent replies on `agent.responses` are delivered on this socket.
 - Chat Service recovery in Docker Compose. Two chat replicas run behind the gateway. Stopping one replica, or stopping `chat-service` and starting it again, reconnects the customer and replays messages they have not acknowledged.
+- Session migration between Chat Service pods for the reply stream: a versioned session snapshot in Redis, mirrored to the compacted Kafka topic `chat.session-state`; a handover protocol (`handover_started`, `handover_completed`); and fencing that rejects writes from a pod whose session was claimed by another, including an old pod that survives a network partition. See [Session state, handover and fencing](#session-state-handover-and-fencing).
 - Chat Service Kubernetes manifests that can be rendered with Kustomize. Applying them requires a cluster that already has Kafka, Redis, and PostgreSQL. This repository does not apply them.
 
 ### Future work
@@ -157,6 +158,7 @@ flowchart TB
 - Retries with backoff, then a dead-letter topic for events that still fail. A poison agent task is dead-lettered after a bounded number of attempts.
 - Circuit breakers and timeouts on calls to product, order, customer, and session-service.
 - Two Chat Service replicas in Compose, with reconnect when one stops.
+- Versioned session snapshots with optimistic concurrency, lease heartbeats and old-pod fencing; a compacted `chat.session-state` topic as the fallback copy of session state.
 - OpenTelemetry traces exported to Jaeger when the local stack is up.
 
 ### Distributed-systems behavior that is future work
@@ -164,7 +166,7 @@ flowchart TB
 - Kubernetes self-healing and horizontal pod autoscaling for the platform. The Chat Service manifests describe probes, a PodDisruptionBudget, and an autoscaler from 2 to 6 pods. They are not applied here, and the other services have no manifests.
 - A cloud deployment.
 - GitHub Actions for test and image builds.
-- Load and fault-injection results beyond the Chat Service restart demo and the automated tests.
+- Load and fault-injection results beyond the Chat Service restart demo and the automated tests. A network-partition script (`scripts/chaos/network_partition_demo.py`) and a Kubernetes rolling-update script (`scripts/k8s/rolling_update_demo.sh`) are included, but no recorded results are published here.
 - Multi-agent collaboration on one turn, and a generative model in place of the rules provider.
 
 ---
@@ -302,6 +304,8 @@ The record is the platform's standard `EventEnvelope`, built by one shared funct
 | `chat.replies` | 12 | conversation ID | Fake or external replies (`VirtualAgentReplyProduced`). Consumer group `chat-replies-consumer`. |
 | `chat.replies.dlq` | 3 | conversation ID | Events from either input topic that can never succeed: schema errors, unknown conversation, a message ID reused in another conversation, a conversation owned by someone else. |
 | `chat.replies.delivery` | 12 | conversation ID | Sequenced messages, read by every Chat Service pod (no consumer group) to push to its own sockets. |
+| `chat.session-state` | 12 | conversation ID | **Compacted** (`cleanup.policy=compact`). The latest session snapshot per conversation (`SessionStateUpdated`). Every pod reads it from the beginning with no consumer group. |
+| `chat.session-state.dlq` | 3 | conversation ID | Session-state records that fail schema validation or whose payload disagrees with the record. |
 
 Topics are created by the `kafka-init` service in Docker Compose (`python -m engagehub_common.messaging.provision`) and by the `kafka-topics` Job in Kubernetes. Both are idempotent.
 
@@ -347,15 +351,15 @@ The tables are created by the service at startup in the `eh_chat` database (whic
 
 | Key | Value | Written when |
 |---|---|---|
-| `chat:cursor:{conversation_id}:{customer_id}` | `{"last_acknowledged_sequence": 4, "last_message_id": "message-004", "updated_at": "…"}` | The customer acknowledges a message |
+| `chat:cursor:{conversation_id}:{customer_id}` | `{"last_acknowledged_sequence": 4, "last_message_id": "message-004", "session_version": 12, "updated_at": "…"}` | The customer acknowledges a message |
 | `chat:delivered:{conversation_id}:{customer_id}` | highest sequence sent to that customer | A message is sent on a socket (validates REST acks) |
-| `chat:session:{conversation_id}:{customer_id}` | last pod and connect time | A socket connects (detects reconnects) |
+| `chat:session:{conversation_id}:{customer_id}` | the session snapshot (a hash; see below) | Claim on connect, each send, ack, typing change, lease renewal, disconnect |
 
 - The cursor only moves forward. A Lua script compares before writing, so a late or reordered ack cannot rewind it.
 - An ack beyond what the socket was actually sent is rejected (`invalid_ack`), as is a `message_id` that does not match the sequence number.
 - Keys expire after 7 days without activity (`CURSOR_TTL_SECONDS`).
 - The keys contain no `{…}` hash tags, and each operation touches one key, so they work on Redis Cluster.
-- **Redis unavailable on reconnect:** the connection still succeeds. The server replays from the durable log, starting after the `last_received_sequence` the client sent in `hello` (or from the beginning if it sent none), and reports `cursor_source` as `client` or `unavailable`. The client deduplicates by `message_id`. Acks during the outage get a retryable `cursor_unavailable` error and the client resends them. The REST cursor and ack endpoints return `503`.
+- **Redis unavailable on reconnect:** the connection still succeeds. The server replays from the durable log, starting after the later of the client's `last_received_sequence` (sent in `hello`) and the last acknowledgement in the latest `chat.session-state` snapshot. It reports `cursor_source` as `client`, `kafka_session_state`, or `unavailable` when neither exists (then the whole history is replayed). The client deduplicates by `message_id`. Acks during the outage get a retryable `cursor_unavailable` error and the client resends them. The REST cursor and ack endpoints return `503`. When Redis returns, the pod closes such sessions with `1013` so the client reconnects and claims the session properly.
 
 ### Replay algorithm
 
@@ -368,6 +372,71 @@ On every connection:
 5. Release the held live messages through the normal delivery check.
 
 Every socket tracks `last_sent`, the highest sequence it has been sent. A live message with `seq <= last_sent` is a duplicate and dropped. One with `seq > last_sent + 1` means a gap, which is filled from PostgreSQL before sending. So each socket receives a strictly increasing, gap-free stream, whatever order the fan-out arrives in.
+
+### Session state, handover and fencing
+
+Customers' sockets are spread across Chat Service replicas, and any replica can serve any conversation (no sticky sessions). When a replica crashes, is cut off by a network partition, or is replaced during a rolling update, the customer reconnects through the gateway to another replica, which reconstructs the session and continues.
+
+```text
+Customer browser ─► NGINX gateway ─► any Chat Service replica
+                                        ├─ Redis: live session snapshot + ack cursor
+                                        ├─ PostgreSQL: durable sequenced message log
+                                        └─ Kafka: ordered message events + compacted session state
+```
+
+**Session snapshot** (`chat:session:{conversation_id}:{customer_id}`, a Redis hash; every script touches one key, so it is Redis Cluster safe):
+
+```json
+{
+  "conversation_id": "conversation-123", "tenant_id": "acme", "customer_id": "cust-acme-dana",
+  "assigned_agent_type": "product_advisor", "assigned_agent_id": "product_advisor",
+  "assigned_agent_name": "Product Advisor", "agent_kind": "virtual_agent",
+  "workflow_state": "ACTIVE", "last_acknowledged_sequence": 5, "last_acknowledged_message_id": "…",
+  "last_sent_sequence": 7, "pending_message_ids": ["message-6", "message-7"],
+  "typing_status": "customer_typing", "current_chat_pod": "chat-service-2", "connection_id": "…",
+  "connected": true, "lease_expires_at": 1795000000.0, "session_version": 12,
+  "last_disconnect_reason": "", "reconnect_count": 3, "handover_count": 1,
+  "created_at": "…", "last_updated_at": "2026-11-28T12:00:00Z"
+}
+```
+
+`workflow_state` and a human agent assignment come from the support-chat session (`/ws`) when the conversation has one (`virtual` → `ACTIVE`, `waiting_human` → `PENDING_HANDOFF`, `human_active` → `HUMAN_ACTIVE`, `resolved` → `RESOLVED`). Otherwise the virtual agent is the sender of the latest agent message. The snapshot expires after 24 hours without activity (`SESSION_SNAPSHOT_TTL_SECONDS`); the cursor and the PostgreSQL log outlive it.
+
+**Version and fencing rules** (`services/chat-service/app/replies/session.py`):
+
+- *Claim.* A pod accepting a connection claims the session, which increments `session_version` and records the pod and connection. The newest connection always wins: the customer has reconnected to that pod. The new version is the connection's fencing token.
+- *Optimistic writes.* Every later write (each delivered message, ack, typing change, disconnect) carries the version its connection holds. If the stored version differs, the write is rejected (`stale session update rejected`), the connection is fenced (`old pod fenced`) and closed with `4409`. Example: pod 1 holds version 10, pod 2 claims (version 11), pod 1 writes with 10 and is rejected.
+- *Before sending.* A live message is sent only after the version check succeeds, so a fenced pod does not deliver more messages once it can reach Redis.
+- *Lease.* Each pod renews a 15 s lease every 5 s (`SESSION_LEASE_SECONDS`, `SESSION_LEASE_RENEW_SECONDS`) with the same version check, without changing the version. A partitioned pod is therefore fenced within one renewal interval of reaching Redis again. A claim also records why the previous owner went away: `owner_unreachable` (lease expired), `takeover_while_owner_alive` (lease still valid: partition, half-open socket or another tab), `server_draining` or `client_closed`.
+- *Kafka.* Each snapshot change is published to `chat.session-state`. A pod that sees a newer version for a conversation it is serving fences its own socket. This also fences an old pod that can reach Kafka but has nothing to write to Redis.
+- *Restore.* A snapshot from Kafka replaces the Redis copy only if its version is newer (`put_if_newer`), and the session table in each pod ignores records older than the one it holds. A session lost from Redis (for example by a failover that dropped recent writes) is restored from Kafka before the claim, so versions keep increasing.
+
+**Handover protocol.** On a connection whose previous owner was a different pod:
+
+```text
+connection_ack     {pod, previous_pod, handover: true, session_version, cursor, workflow_state, agent, typing_status}
+handover_started   {old_pod, new_pod, reason, session_version}
+replay_started     {from_sequence, to_sequence, count}
+chat_message …     (every message after the last acknowledgement, from PostgreSQL)
+replay_completed   {last_sequence}
+handover_completed {old_pod, new_pod, replayed_from_sequence, replayed_to_sequence, replayed_count,
+                    session_version, recovery_ms}
+```
+
+The resume point is the last acknowledged message, taken from the first available of: the Redis cursor (or the snapshot copy if it is ahead), the latest `chat.session-state` snapshot, and the client's `last_received_sequence`. Replay always reads PostgreSQL, never the compacted topic, because compaction removes older records.
+
+**What is guaranteed, and under what conditions.** In the scenarios the tests exercise (pod crash, restart, network partition of a pod, rolling drain, Redis outage, Redis losing a snapshot, Kafka redelivery, concurrent claims):
+
+- A message is shown to the customer as delivered only after it is committed to PostgreSQL, and is acknowledged only when the client sends an ack. A reconnect never resumes from before the last acknowledgement Redis or Kafka recorded, so acknowledged messages are not replayed and are not lost.
+- Sent but unacknowledged messages are replayed after reconnect.
+- Messages reach each socket in sequence order with gaps filled, and the client drops repeats by `message_id`, so no duplicates are displayed.
+- Only one connection per conversation can keep writing session state; superseded ones are closed.
+
+These rely on PostgreSQL keeping the log. They do not cover losing PostgreSQL itself, nor a pod that is partitioned from Redis and Kafka while still reaching the customer. That pod cannot be fenced until it reaches one of them, though nothing it does can move the cursor backwards or create sequence numbers.
+
+**Rolling update.** The `preStop` hook calls `POST /internal/drain` (accepted only from inside the pod, and blocked at the gateway), which makes `/ready` fail so the endpoints controller stops routing new sockets to the pod. After the pause Kubernetes sends SIGTERM. The pod sends `server_draining`, records each session as drained, closes the sockets with `1012`, and leaves its consumer groups. Clients reconnect at once and the next pod reports `handover_started` with reason `server_draining`. A pod that is draining also refuses new sockets with `1012`.
+
+**Customer screen.** The **Reply stream demo** tab shows connected, reconnecting, handover started and completed, replaying, the current pod, session version, last received and last acknowledged sequence, messages replayed, duplicates ignored, gaps detected and recovery time. The client reconnects with exponential backoff and the same conversation ID. It sends a ping every 15 s and reconnects if no reply arrives (a half-open socket during a partition), asks the server to `resync` when it sees a gap, and resends an ack that was in flight when the connection dropped.
 
 ### Duplicate prevention, layer by layer
 
@@ -467,6 +536,26 @@ By hand, on the screen (**Reply stream demo** tab):
 
 To show a pod failover rather than a full restart, stop one of the two replicas (`docker stop engagehub-chat-service-1`): the gateway sends the reconnect to the other replica.
 
+**Network partition of one replica** (automated, checks every step, always restores the network):
+
+```bash
+docker compose up -d --build
+python scripts/chaos/network_partition_demo.py               # detach replica 1 from the network
+python scripts/chaos/network_partition_demo.py --mode stop   # or stop it instead
+```
+
+It connects a customer to replica 1, publishes 5 replies and acknowledges 2, then runs `docker network disconnect <network> <replica-1>`. The replica keeps running, which is what makes it a partition rather than a crash. The script publishes 3 replies during the failure and reconnects through the gateway, which now reaches replica 2. It checks for `handover_started`, the acknowledged position (2), replies 3 to 8 replayed in order, a duplicate event showing nothing, and live chat continuing. It then runs `docker network connect`, after which replica 1 logs `old pod fenced` when its lease renewal is rejected. The equivalent manual commands:
+
+```bash
+docker compose ps chat-service                               # find the replica names
+docker network disconnect engagehub_default engagehub-chat-service-1
+# … customer reconnects and is handed over to engagehub-chat-service-2 …
+docker network connect engagehub_default engagehub-chat-service-1
+docker logs engagehub-chat-service-1 2>&1 | grep -E "old pod fenced|stale session update rejected"
+```
+
+The same flow is in `tests/e2e/test_reply_replay_e2e.py::test_network_partition_of_one_replica_migrates_the_session` (`ENGAGEHUB_E2E=1`).
+
 ### Kubernetes
 
 Chat Service is the only service with Kubernetes manifests. They are in `deploy/k8s/chat-service` (Kustomize). Rendering or applying them is optional and requires a cluster you already operate. This repository does not deploy Chat Service, or any other service, to a cloud.
@@ -479,25 +568,43 @@ kubectl apply -k deploy/k8s/chat-service
 
 They contain a Namespace, a ConfigMap, a Secret (generated from the git-ignored `secret.env`), a Deployment with 2 replicas, a Service, a PodDisruptionBudget, a HorizontalPodAutoscaler (2 to 6 pods), Ingress rules for `/ws/customer` and `/api/chat`, and the topic-creation Job.
 
-The Deployment uses readiness (`/ready`), liveness (`/health`) and startup probes, CPU and memory requests and limits, a non-root read-only container, `maxUnavailable: 0` rollouts, and graceful shutdown: a `preStop` pause so endpoints drop the pod, then on SIGTERM the pod closes customer sockets with code `1012`, finishes its in-flight Kafka records and leaves the consumer group. The Service has no session affinity: any pod can resume any conversation from Redis and PostgreSQL. Kafka, Redis Cluster and PostgreSQL are expected to be installed separately (for example through operators); their addresses are in the ConfigMap.
+The Deployment uses readiness (`/ready`), liveness (`/health`) and startup probes, CPU and memory requests and limits, a non-root read-only container, a `RollingUpdate` strategy with `maxUnavailable: 0` and `maxSurge: 1`, a PodDisruptionBudget, `terminationGracePeriodSeconds: 45`, and graceful shutdown: the `preStop` hook drains the pod (readiness fails), waits for endpoints to drop it, then on SIGTERM the pod sends `server_draining`, closes customer sockets with code `1012`, finishes its in-flight Kafka records and leaves the consumer group. The Service has no session affinity: any pod can resume any conversation from Redis, Kafka and PostgreSQL. Kafka, Redis Cluster and PostgreSQL are expected to be installed separately (for example through operators); their addresses are in the ConfigMap.
+
+Rolling-update demonstration (needs a cluster with the infrastructure and these manifests applied; not run in this repository):
+
+```bash
+JWT_SECRET=<value from secret.env> scripts/k8s/rolling_update_demo.sh
+```
+
+It holds a customer session open through `kubectl port-forward svc/chat-service`, publishes a reply every second, runs `kubectl rollout restart deployment/chat-service`, and reports the pods the session moved through, each handover, and whether every stored message was received once and in order. It then prints the pods' `draining`, `handover completed` and `old pod fenced` log lines.
 
 ### Observability
 
-Structured JSON log events (each with `correlation_id`, `conversation_id` and, where relevant, `message_id` and `sequence_number`): `websocket connected`, `websocket disconnected`, `message received from kafka`, `message appended to durable log`, `cursor updated`, `replay started`, `replay completed`, `duplicate message ignored`, `handler failed; retrying`, `dependency unavailable; retrying until it recovers`, `event dead-lettered`, `customer reconnected`, `session recovery completed`.
+Structured JSON log events (each with `correlation_id`, `conversation_id` and, where relevant, `message_id`, `sequence_number` and `session_version`): `websocket connected`, `websocket disconnected`, `customer reconnecting`, `conversation claimed by new pod`, `handover started`, `handover completed`, `handover failed`, `session snapshot written`, `session snapshot restored`, `stale session update rejected`, `stale session event ignored`, `old pod fenced`, `cursor updated`, `replay started`, `replay completed`, `gap detected`, `duplicate message ignored`, `kafka event redelivered`, `message received from kafka`, `message appended to durable log`, `handler failed; retrying`, `dependency unavailable; retrying until it recovers`, `event dead-lettered`, `draining: readiness now fails`, `recovery completed`. The partition script prints `network partition simulated`.
 
 Prometheus metrics (on `/metrics`):
 
 | Metric | Meaning |
 |---|---|
-| `engagehub_customer_ws_connections` | Active customer sockets |
-| `engagehub_customer_reconnects_total` | Reconnections |
-| `engagehub_customer_replays_total`, `engagehub_customer_messages_replayed_total` | Replays and messages replayed |
-| `engagehub_customer_duplicates_ignored_total{stage}` | Duplicates dropped by the consumer or at delivery |
+| `engagehub_active_websocket_connections{endpoint}` | Open sockets on `/ws` and `/ws/customer` |
+| `engagehub_session_claims_total{kind}` | Claims: `new`, `reconnect`, `handover` |
+| `engagehub_session_conflicts_total{source}` | Writes or records refused on version: `redis_cas`, `lease`, `kafka_event`, `stale_kafka_event` |
+| `engagehub_stale_pod_updates_rejected_total` | Writes from a fenced connection |
+| `engagehub_handovers_total{reason}`, `engagehub_handovers_failed_total` | Sessions moved to another pod, and handovers that did not complete |
+| `engagehub_session_restores_total{source}` | Snapshots restored from `redis` or `kafka` |
+| `engagehub_messages_replayed_total{source}` | Messages replayed (`postgres` for this stream) |
+| `engagehub_duplicate_messages_ignored_total{stage}` | Duplicates dropped by the consumer or at delivery |
+| `engagehub_message_gaps_detected_total{where}` | Gaps filled before delivery (`server`) or reported by a client (`client`) |
+| `engagehub_recovery_seconds` | Reconnect accepted to replay completed |
 | `engagehub_customer_delivery_latency_seconds` | Producer timestamp to live WebSocket send |
-| `engagehub_customer_recovery_seconds` | Reconnect to replay completed |
-| `engagehub_chat_messages_appended_total`, `engagehub_customer_cursor_updates_total` | Appends and cursor updates |
+| `engagehub_kafka_consumer_lag{group,topic,partition}` | Records behind the high watermark, from each consumer |
+| `engagehub_customer_reconnects_total`, `engagehub_customer_replays_total`, `engagehub_customer_cursor_updates_total`, `engagehub_chat_messages_appended_total`, `engagehub_session_state_publish_failures_total` | Reconnects, replays, cursor updates, appends, unpublished snapshots |
 | `engagehub_events_consumed_total{outcome="dead_letter"}`, `engagehub_event_retries_total` | Failed and retried Kafka events |
-| `kafka_consumergroup_lag{consumergroup="chat-replies-consumer"}` | Consumer lag (from kafka-exporter) |
+| `kafka_consumergroup_lag` | Consumer lag (from kafka-exporter) |
+
+Grafana dashboard **EngageHub Session Recovery** (`deploy/grafana/dashboards/engagehub-session-recovery.json`) has panels for active sockets, handovers, session conflicts, stale writes rejected, failed handovers, replays, duplicates, gaps, recovery time (p50, p95), Kafka consumer lag, delivery latency, claims, and Chat Service pods up.
+
+Tracing: the gateway forwards `traceparent`. Chat Service adds spans `chat.session.open`, `redis.session.claim`, `postgres.replay` and `kafka.session_state.publish`, and puts the trace context on its Kafka records. A trace therefore continues from the pod that claimed a session to the old pod that consumes the claim and fences its socket.
 
 ### Tests
 
@@ -525,18 +632,31 @@ ENGAGEHUB_E2E=1 .venv/bin/python -m pytest tests/e2e -v                       # 
 | Chat Service restart | `test_chat_service_restart_keeps_acknowledged_state_and_replays`, `test_shutdown_closes_customer_sockets_*` |
 | Automatic reconnect, UI deduplication | `frontend/src/replay/ReplayClient.test.ts` |
 | Real agent responses | `test_real_agent_response_is_committed_and_delivered`, `test_real_and_fake_replies_share_one_sequence_*`, `test_redelivered_agent_response_*`, `test_agent_response_*` (chat-service); `test_reply_is_published_to_agent_responses_*`, `test_redelivered_task_republishes_*`, `test_failed_agent_response_publish_*` (virtual-agent-service) |
-| End to end | `tests/e2e/test_reply_replay_e2e.py` (runs `scripts/demo_reply_replay.py`) |
+| Session snapshot create, version, conflict, stale pod rejection | `tests/test_session_migration.py`: `test_claim_creates_*`, `test_writes_bump_the_version_*`, `test_spec_example_old_pod_write_*`, `test_put_if_newer_*`, `test_concurrent_claims_leave_exactly_one_owner` |
+| Kafka compacted session state | `test_state_table_keeps_the_newest_version_*`, `test_invalid_session_state_events_are_dead_lettered`, `test_lost_redis_snapshot_is_restored_from_kafka_*`, `test_redis_outage_resumes_from_the_kafka_snapshot`, `libs/common/tests/test_topics.py` |
+| Handover after crash, partition, drain | `test_handover_after_pod_crash_*`, `test_partition_old_pod_is_fenced_*`, `test_lease_renewal_fences_*`, `test_newer_session_state_event_on_kafka_fences_*`, `test_rolling_update_drain_*`, `test_owner_with_expired_lease_*` |
+| Agent, workflow and typing restored | `test_agent_assignment_workflow_and_typing_survive_the_handover`, `test_human_assignment_from_support_chat_is_restored` |
+| Acknowledged-message preservation | `test_acknowledged_messages_are_not_replayed_and_unacknowledged_ones_are` |
+| Recovery metrics | `test_recovery_metrics_are_recorded`, `test_gap_in_live_fanout_*`, `libs/common/tests/test_consumer_runner.py::test_consumer_lag_metric_*` |
+| API: typing, resync, session view, drain | `tests/test_session_api.py` |
+| Rolling-update configuration | `test_k8s_manifests.py::test_rolling_update_drains_before_termination`, `test_lease_settings_are_configured` |
+| Message log tenant and customer columns, migration | `test_reply_log_postgres.py::test_messages_carry_tenant_and_customer`, `test_migration_adds_and_backfills_columns_on_an_old_table` |
+| Client handover, heartbeat, gap resync, ack resend | `frontend/src/replay/ReplayClient.test.ts` (`session migration` block) |
+| End to end | `tests/e2e/test_reply_replay_e2e.py`: the replay demo, and the network-partition flow (`scripts/chaos/network_partition_demo.py`) |
 
 Terminal output from the last run:
 
 ```text
-services/chat-service           71 passed, 2 skipped   (SQLite; the 2 skipped need TEST_POSTGRES_URL)
-services/chat-service           73 passed              (TEST_POSTGRES_URL set, PostgreSQL 16)
-services/virtual-agent-service  22 passed
-libs/common             52 passed
-frontend                36 passed (ReplayClient 14, ChatConnection 22)
-scripts/tests           5 passed
+services/chat-service           105 passed, 4 skipped  (SQLite; the 4 skipped need TEST_POSTGRES_URL)
+services/chat-service           109 passed             (TEST_POSTGRES_URL set, PostgreSQL 16)
+libs/common                     55 passed
+services/virtual-agent-service  26 passed
+services/api-gateway            7 passed
+frontend                        45 passed (ReplayClient 23, ChatConnection 22)
+tests + scripts/tests           7 passed, 2 skipped    (the 2 skipped are the e2e tests: ENGAGEHUB_E2E=1)
 ```
+
+The e2e tests, the network-partition script and the Kubernetes rolling-update script were not run for these results: the development machine had too little free disk to start the Docker stack.
 
 ### Design decisions
 
@@ -544,13 +664,22 @@ scripts/tests           5 passed
 - **Kafka fan-out for live delivery.** Only one pod's consumer sequences a reply, but the customer's socket may be on another pod. Each pod reads `chat.replies.delivery` and serves its own sockets. If that publish fails, the consumer retries, and any message missed live is recovered by the gap check or the next replay, since PostgreSQL has it.
 - **Outages retry, bad events dead-letter.** Sending events to the DLQ because the database was briefly down would lose them from the log.
 - **No sticky sessions.** Every pod can serve every conversation, which is what makes pod failure recoverable.
-- **The cursor tracks acknowledgment, not delivery.** A message sent but not acknowledged is sent again after a reconnect; the client drops the repeat by `message_id`. That turns at-least-once delivery into exactly-once display.
+- **The cursor tracks acknowledgment, not delivery.** A message sent but not acknowledged is sent again after a reconnect; the client drops the repeat by `message_id`. Delivery is at least once; display is free of duplicates.
+- **Newest connection wins, older ones are fenced.** A reconnecting customer is the best evidence of where the session lives now, so a claim always succeeds and bumps the version. Rejecting older writes is cheap (one Lua compare per write) and needs no coordinator.
+- **Compacted topic for state, log for history.** `chat.session-state` keeps only the latest snapshot per conversation, which is right for state and wrong for history. Replay reads PostgreSQL.
+- **Session snapshot writes do not wait for Kafka.** Redis holds the live copy. A failed publish is counted and superseded by the next change, so a Kafka outage does not stall chat.
 
 ### Known limitations
 
 - Replay sends at most 5,000 messages per connection; longer histories would need paging.
 - The cursor is per customer, not per device: two devices of one customer share it.
-- If Redis is down and the client sends no `last_received_sequence`, the whole history is replayed (and deduplicated by the client).
+- If Redis is down, the client sends no `last_received_sequence`, and no `chat.session-state` record exists for the conversation, the whole history is replayed (and deduplicated by the client).
+- The `chat.session-state` copy can lag Redis: per-message progress (`last_sent_sequence`) is published with the next ack or state change, not on every send, and lease renewals are not published. Acknowledgements are published as they happen.
+- Each pod keeps every conversation's latest snapshot from `chat.session-state` in memory. A pod that has just started may not have read the whole topic when a reconnect arrives; it then relies on Redis, or on the client's position if Redis is also down.
+- A pod partitioned from Redis and Kafka while still connected to the customer cannot be fenced until it reaches one of them. It cannot move the cursor backwards or assign sequence numbers in the meantime.
+- Two browser tabs on one conversation fence each other: the most recent connection wins and the other is closed with `4409`.
+- REST acks (`POST /conversations/{id}/ack`) update the cursor only, not the session snapshot. The resume point takes the later of the two.
+- During a rolling update from a version without session snapshots, an older pod can overwrite the snapshot key with its old connection marker. The next claim converts it back.
 - Every pod reads every message on `chat.replies.delivery`. That is simple and fine for this scale; very large deployments would route by conversation instead.
 - Virtual agents publish each reply to both `chat.messages` (the support-chat flow) and `agent.responses` (this log), so a reply exists in two logs with the same `message_id` and independent sequence numbers.
 - Customer messages on `/ws` are published to `chat.messages`, and the agent orchestrator consumes that topic. Customer messages on `/ws/customer` are stored in this log only. Forwarding them to the orchestrator is future work, listed under Implementation status.

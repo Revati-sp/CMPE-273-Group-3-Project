@@ -91,6 +91,7 @@ class SequencedMessage(BaseModel):
 class Cursor(BaseModel):
     last_acknowledged_sequence: int = 0
     last_message_id: str = ""
+    session_version: int = 0  # the session version of the connection that recorded the ack
     updated_at: str = ""
 
 
@@ -121,3 +122,13 @@ class CustomerMessageFrame(BaseModel):
 
 class PingFrame(BaseModel):
     type: Literal["ping"]
+
+
+class TypingFrame(BaseModel):
+    type: Literal["typing"]
+    is_typing: bool
+
+
+class ResyncFrame(BaseModel):
+    type: Literal["resync"]
+    after_sequence: int = Field(ge=0)

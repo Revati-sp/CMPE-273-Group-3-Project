@@ -53,8 +53,10 @@ from app.protocol import (
     ResyncFrame,
     TypingFrame,
 )
+from app.replies.metrics import ACTIVE_WEBSOCKETS
 
 log = logging.getLogger(__name__)
+SUPPORT_WS_CONNECTIONS = ACTIVE_WEBSOCKETS.labels("/ws")
 
 SendFunc = Callable[[dict], Awaitable[None]]
 CloseFunc = Callable[[int, str], Awaitable[None]]
@@ -224,6 +226,7 @@ class ChatCore:
         # Register before replay, so anything published meanwhile is held back and not missed.
         self.connections[(tenant_id, conversation_id)].add(conn)
         WS_CONNECTIONS.inc()
+        SUPPORT_WS_CONNECTIONS.inc()
 
         migrated = bool(previous_pod) and previous_pod != self.pod
         stored_ack = await self.store.participant_ack(tenant_id, conversation_id, principal.subject)
@@ -312,6 +315,7 @@ class ChatCore:
         if conn in self.connections.get(key, ()):
             self.connections[key].discard(conn)
             WS_CONNECTIONS.dec()
+            SUPPORT_WS_CONNECTIONS.dec()
             if not self.connections[key]:
                 del self.connections[key]
         conn.closed = True

@@ -350,7 +350,10 @@ def test_message_id_reused_in_another_conversation_is_dead_lettered(stack, clien
     stack.publish("first", message_id="message-shared")
     stack.publish("imposter", conversation_id="conversation-456", message_id="message-shared")
     wait_for(lambda: stack.kafka.events(CHAT_REPLIES_DLQ))
-    assert stack.stored(client) == 1 and stack.stored(client, "conversation-456") == 0
+    # The two conversations are on different partitions, so either event may be read first
+    # (Kafka orders only within a partition). Whichever is first is stored; the other is refused.
+    assert stack.stored(client) + stack.stored(client, "conversation-456") == 1
+    assert len(stack.kafka.events(CHAT_REPLIES_DLQ)) == 1
     assert "non_retryable" in stack.kafka.events(CHAT_REPLIES_DLQ)[0].payload["reason"]
 
 

@@ -1,9 +1,14 @@
+# Customer WebSockets. Any replica serves any conversation: state is in Redis (session snapshot,
+# cursor), Kafka (chat.session-state) and PostgreSQL (the message log). On shutdown the preStop
+# hook drains the pod (readiness fails), then SIGTERM sends server_draining and closes sockets
+# with 1012; clients reconnect to another replica, which claims the session and replays.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: chat-service
-  labels:
+  labels: &id001
     app.kubernetes.io/name: chat-service
+    app.kubernetes.io/component: chat
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -13,81 +18,113 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0  # never drop below two serving pods during a rollout
+      maxUnavailable: 0
       maxSurge: 1
   template:
     metadata:
-      labels:
-        app.kubernetes.io/name: chat-service
+      labels: *id001
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '8000'
         prometheus.io/path: /metrics
     spec:
-      # Time for preStop, closing sockets with 1012 and finishing in-flight Kafka records.
+      serviceAccountName: engagehub-workload
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: chat-service
+      containers:
+      - name: chat-service
+        image: engagehub/chat-service
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: engagehub-config
+        - configMapRef:
+            name: chat-service-config
+        - secretRef:
+            name: engagehub-secrets
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: SERVICE_NAME
+          value: chat-service
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: engagehub-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: engagehub-secrets
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: engagehub-config
+              key: POSTGRES_HOST
+        - name: DATABASE_URL
+          value: postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/eh_chat
+        resources:
+          requests:
+            cpu: 100m
+            memory: 192Mi
+          limits:
+            cpu: '1'
+            memory: 384Mi
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 5
+          failureThreshold: 36
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - python -c "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8000/internal/drain',
+                method='POST'), timeout=2)" ; sleep 8
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
-        seccompProfile: { type: RuntimeDefault }
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: chat-service
-      containers:
-        - name: chat-service
-          image: engagehub/chat-service
-          imagePullPolicy: IfNotPresent
-          ports:
-            - { name: http, containerPort: 8000 }
-          envFrom:
-            - configMapRef: { name: chat-service-config }
-            - secretRef: { name: chat-service-secrets }
-          env:
-            - name: POD_NAME  # shown to clients in connection_ack, and used as the Kafka client ID
-              valueFrom: { fieldRef: { fieldPath: metadata.name } }
-          resources:
-            requests: { cpu: 100m, memory: 192Mi }
-            limits: { cpu: "1", memory: 384Mi }
-          startupProbe:
-            httpGet: { path: /health, port: http }
-            periodSeconds: 5
-            failureThreshold: 36  # allow up to 3 minutes for Kafka, Redis and PostgreSQL
-          livenessProbe:
-            httpGet: { path: /health, port: http }
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
-          readinessProbe:
-            # /ready checks Redis, PostgreSQL and the consumer tasks. An unready pod gets
-            # no new WebSockets; clients reconnect through the Service to a ready one.
-            httpGet: { path: /ready, port: http }
-            periodSeconds: 5
-            timeoutSeconds: 3
-            failureThreshold: 2
-          lifecycle:
-            preStop:
-              # 1. /internal/drain makes /ready fail, so the endpoints controller removes the pod
-              #    and new sockets go to other replicas. 2. Wait for that to propagate.
-              # 3. Kubernetes then sends SIGTERM: the pod sends server_draining, records each
-              #    session as drained, closes sockets with 1012 and stops its consumers.
-              exec:
-                command:
-                  - sh
-                  - -c
-                  - >-
-                    python -c "import urllib.request as u;
-                    u.urlopen(u.Request('http://127.0.0.1:8000/internal/drain', method='POST'), timeout=2)" ;
-                    sleep 8
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: { drop: ["ALL"] }
-          volumeMounts:
-            - { name: tmp, mountPath: /tmp }
-      volumes:
-        - name: tmp
-          emptyDir: {}
+        seccompProfile:
+          type: RuntimeDefault

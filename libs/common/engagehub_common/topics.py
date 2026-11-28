@@ -75,5 +75,7 @@ TOPIC_SPECS: tuple[TopicSpec, ...] = (
     TopicSpec(AGENT_RESPONSES, 12, 14 * _DAY_MS),
     TopicSpec(SESSION_STATE, 12, 0, cleanup_policy="compact"),
     TopicSpec(SESSION_STATE_DLQ, 3, 30 * _DAY_MS),
-    *(TopicSpec(agent_task_topic(a), 6, 3 * _DAY_MS) for a in AGENT_TYPES),
+    # 12 partitions: a consumer group uses at most one replica per partition, and the agent
+    # autoscalers go up to 10 replicas. Existing topics keep their count (see README).
+    *(TopicSpec(agent_task_topic(a), 12, 3 * _DAY_MS) for a in AGENT_TYPES),
 )

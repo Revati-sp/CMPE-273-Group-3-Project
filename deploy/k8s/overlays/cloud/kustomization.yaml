@@ -1,0 +1,55 @@
+# Template for a cloud cluster: registry images, TLS ingress, managed data stores, KEDA.
+# Not deployed or tested by this repository. Replace every example.com value first.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+images:
+- name: engagehub/api-gateway
+  newName: registry.example.com/engagehub/api-gateway
+  newTag: 1.0.0
+- name: engagehub/frontend
+  newName: registry.example.com/engagehub/frontend
+  newTag: 1.0.0
+- name: engagehub/chat-service
+  newName: registry.example.com/engagehub/chat-service
+  newTag: 1.0.0
+- name: engagehub/agent-orchestrator
+  newName: registry.example.com/engagehub/agent-orchestrator
+  newTag: 1.0.0
+- name: engagehub/virtual-agent-service
+  newName: registry.example.com/engagehub/virtual-agent-service
+  newTag: 1.0.0
+- name: engagehub/human-agent-service
+  newName: registry.example.com/engagehub/human-agent-service
+  newTag: 1.0.0
+- name: engagehub/notification-service
+  newName: registry.example.com/engagehub/notification-service
+  newTag: 1.0.0
+- name: engagehub/analytics-service
+  newName: registry.example.com/engagehub/analytics-service
+  newTag: 1.0.0
+- name: engagehub/auth-service
+  newName: registry.example.com/engagehub/auth-service
+  newTag: 1.0.0
+- name: engagehub/tenant-service
+  newName: registry.example.com/engagehub/tenant-service
+  newTag: 1.0.0
+- name: engagehub/customer-service
+  newName: registry.example.com/engagehub/customer-service
+  newTag: 1.0.0
+- name: engagehub/product-service
+  newName: registry.example.com/engagehub/product-service
+  newTag: 1.0.0
+- name: engagehub/order-service
+  newName: registry.example.com/engagehub/order-service
+  newTag: 1.0.0
+- name: engagehub/session-service
+  newName: registry.example.com/engagehub/session-service
+  newTag: 1.0.0
+- name: engagehub/audit-service
+  newName: registry.example.com/engagehub/audit-service
+  newTag: 1.0.0
+patches:
+- path: ingress-tls-patch.yaml
+- path: config-patch.yaml
+resources:
+- ../keda

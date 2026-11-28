@@ -1,0 +1,16 @@
+# Local cluster: the platform plus single-node infrastructure. See scripts/k8s/kind_up.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: engagehub
+configMapGenerator:
+- name: postgres-init
+  files:
+  - init-databases.sql
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+- path: config-patch.yaml
+- path: chat-config-patch.yaml
+resources:
+- ../../platform
+- infrastructure.yaml

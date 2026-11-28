@@ -1,0 +1,22 @@
+# One entry point. The gateway routes REST and both WebSocket endpoints; WebSockets need the
+# long timeouts. TLS is added by overlays/cloud.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: engagehub
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '3600'
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              name: http

@@ -1,0 +1,13 @@
+# Services the scaled tier depends on: login, tenants, customers, catalogue, orders,
+# conversation history (gRPC) and audit, plus the web frontend. Fixed replica counts, no HPA.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- auth-service.yaml
+- tenant-service.yaml
+- customer-service.yaml
+- product-service.yaml
+- order-service.yaml
+- session-service.yaml
+- audit-service.yaml
+- frontend.yaml

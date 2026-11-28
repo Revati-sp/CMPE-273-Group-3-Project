@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The platform runs locally with Docker Compose. This repository does not deploy it to a cloud. The only Kubernetes manifests are for Chat Service, in `deploy/k8s/chat-service`.
+The platform runs locally with Docker Compose. Kubernetes manifests for horizontal scaling are in `deploy/k8s` (Kustomize). They are rendered and checked by automated tests, but have not been applied to a cluster from this repository, and nothing is deployed to a cloud. See [Horizontal scaling](#horizontal-scaling).
 
 ### Implemented
 
@@ -15,11 +15,12 @@ The platform runs locally with Docker Compose. This repository does not deploy i
 - The customer reply stream on `/ws/customer`: a sequenced PostgreSQL log, a Redis acknowledgement cursor, replay after reconnect, and dead-letter handling. Virtual-agent replies on `agent.responses` are delivered on this socket.
 - Chat Service recovery in Docker Compose. Two chat replicas run behind the gateway. Stopping one replica, or stopping `chat-service` and starting it again, reconnects the customer and replays messages they have not acknowledged.
 - Session migration between Chat Service pods for the reply stream: a versioned session snapshot in Redis, mirrored to the compacted Kafka topic `chat.session-state`; a handover protocol (`handover_started`, `handover_completed`); and fencing that rejects writes from a pod whose session was claimed by another, including an old pod that survives a network partition. See [Session state, handover and fencing](#session-state-handover-and-fencing).
-- Chat Service Kubernetes manifests that can be rendered with Kustomize. Applying them requires a cluster that already has Kafka, Redis, and PostgreSQL. This repository does not apply them.
+- Kubernetes manifests (Kustomize) for every service: two replicas of each scaled service, HPAs, PodDisruptionBudgets, probes, graceful shutdown, network policies, plus overlays for KEDA (Kafka-lag autoscaling of the virtual agents), kind (local cluster with single-node Kafka, Redis and PostgreSQL) and a cloud template. They render offline and pass static tests; they have not been applied to a cluster here.
+- Virtual-agent replicas share one Kafka consumer group per agent type, so tasks are spread across replicas and a failed replica's tasks are redelivered to the others. An in-process load test with 50 customers and replicated workers demonstrates this; see [Horizontal scaling](#horizontal-scaling).
 
 ### Future work
 
-- Kubernetes manifests for the services other than Chat Service, and a deployment of the whole platform to a cluster or a cloud.
+- Running the platform on a Kubernetes cluster (kind or cloud) and publishing load-test results from a real cluster. The manifests, the kind bootstrap script and the scaling demo script are ready but have not been run here.
 - Continuous integration. GitHub Actions is named in the technology list below. This repository has no workflow files.
 - Load-test results for concurrent users, response latency, and recovery time.
 - Publishing customer messages typed on `/ws/customer` to the agent orchestrator. The support-chat socket `/ws` already does this. The reply-stream socket stores those messages in its own log.
@@ -39,7 +40,7 @@ The reliability goal is live-chat migration when a Chat Service process stops. E
 - **24/7 customer support:** The virtual agents handle product questions, order tracking, returns, billing, technical support, FAQs, and complaints. The Supervisor clarifies the request or hands the conversation to a human agent.
 - **Faster issue resolution:** The orchestrator sends each support-chat message to one specialist, or to the human queue.
 - **Reduced operational cost:** Routine questions stay with a virtual agent. Human agents take sensitive, uncertain, or escalated cases.
-- **More than one chat replica:** Docker Compose runs two Chat Service replicas. The gateway reconnects a customer to the replica that is still up. Autoscaling is specified only in the Chat Service Kubernetes manifests, and those manifests are not deployed from this repository.
+- **More than one chat replica:** Docker Compose runs two Chat Service replicas. The gateway reconnects a customer to the replica that is still up. Autoscaling is specified in the Kubernetes manifests, which are not deployed from this repository.
 - **Reliable customer conversations:** Session state in Redis, the Kafka log, and replay keep an acknowledged conversation going after a Chat Service restart.
 - **Handoff context:** Sentiment and a short summary go with an escalation, so the human agent sees why the conversation was transferred.
 - **Multi-tenant separation:** Tenants share the infrastructure. Customer and conversation records stay scoped to a tenant.
@@ -125,7 +126,7 @@ flowchart TB
 2. A message on `/ws` gets a message ID, conversation ID, sequence number, timestamp, tenant ID, and correlation ID. Chat Service publishes it to `chat.messages` with the conversation ID as the key.
 3. Session state for that conversation lives in Redis: assigned agent, workflow state, last acknowledgement, unacknowledged messages, and typing status. History reads go to session-service over gRPC.
 4. The orchestrator consumes `chat.messages` from `/ws`, picks one virtual agent, and publishes a task on that agent's topic. If the customer asks for a person, the topic is sensitive, the customer is repeatedly frustrated, or that agent has no worker, it publishes an escalation instead. The eighth handler is the Supervisor, the worker that asks for clarification.
-5. If one Chat Service replica stops, the gateway sends the reconnect to the other replica. That replica reads the session from Redis and replays messages after the last acknowledgement. Message IDs and idempotency keys drop duplicates. The same recovery is what `docker compose stop chat-service` and `docker compose start chat-service` demonstrate. Kubernetes restart of Chat Service is specified in `deploy/k8s/chat-service` and is not a deployment this repository performs.
+5. If one Chat Service replica stops, the gateway sends the reconnect to the other replica. That replica reads the session from Redis and replays messages after the last acknowledgement. Message IDs and idempotency keys drop duplicates. The same recovery is what `docker compose stop chat-service` and `docker compose start chat-service` demonstrate. Kubernetes restart of Chat Service is specified in `deploy/k8s` and is not a deployment this repository performs.
 6. Notification, Analytics, and Audit each consume Kafka in their own consumer group.
 
 **Reply stream, separately:** Messages the customer types on `/ws/customer` are appended to the reply log and are not published to `chat.messages`. They do not reach the orchestrator. Agent replies that virtual agents publish on `agent.responses` do travel the other way and show up on `/ws/customer`. Connecting those customer messages to the orchestrator is future work.
@@ -145,7 +146,7 @@ flowchart TB
 | **Docker Compose** | The local stack | This is how the system runs |
 | **NGINX** | API gateway container in Compose | Running in Docker Compose |
 | **Prometheus, Grafana, Jaeger** | Metrics and traces in the local stack | Running in Docker Compose |
-| **Kubernetes** | Manifests for Chat Service only (`deploy/k8s/chat-service`) | Not applied. No other service has manifests |
+| **Kubernetes** | Manifests for every service (`deploy/k8s`, Kustomize), with KEDA, kind and cloud overlays | Rendered and statically tested; not applied to a cluster |
 | **Cloud** | — | No cloud account, cluster, or deployment is in this repository |
 | **GitHub Actions** | — | Not in this repository |
 
@@ -163,7 +164,7 @@ flowchart TB
 
 ### Distributed-systems behavior that is future work
 
-- Kubernetes self-healing and horizontal pod autoscaling for the platform. The Chat Service manifests describe probes, a PodDisruptionBudget, and an autoscaler from 2 to 6 pods. They are not applied here, and the other services have no manifests.
+- Kubernetes self-healing and horizontal pod autoscaling observed on a running cluster. The manifests describe probes, PodDisruptionBudgets, HPAs and KEDA ScaledObjects, but are not applied here.
 - A cloud deployment.
 - GitHub Actions for test and image builds.
 - Load and fault-injection results beyond the Chat Service restart demo and the automated tests. A network-partition script (`scripts/chaos/network_partition_demo.py`) and a Kubernetes rolling-update script (`scripts/k8s/rolling_update_demo.sh`) are included, but no recorded results are published here.
@@ -558,15 +559,15 @@ The same flow is in `tests/e2e/test_reply_replay_e2e.py::test_network_partition_
 
 ### Kubernetes
 
-Chat Service is the only service with Kubernetes manifests. They are in `deploy/k8s/chat-service` (Kustomize). Rendering or applying them is optional and requires a cluster you already operate. This repository does not deploy Chat Service, or any other service, to a cloud.
+Chat Service's manifests are in `deploy/k8s/chat-service`, part of the platform-wide layout described in [Horizontal scaling](#horizontal-scaling). Applying them requires a cluster you operate; this repository does not deploy to a cloud.
 
 ```bash
-cp deploy/k8s/chat-service/secret.env.example deploy/k8s/chat-service/secret.env   # set real values
-kubectl kustomize deploy/k8s/chat-service          # render and inspect
-kubectl apply -k deploy/k8s/chat-service
+cp deploy/k8s/base/secret.env.example deploy/k8s/base/secret.env   # set real values
+kubectl kustomize deploy/k8s          # render and inspect
+kubectl apply -k deploy/k8s
 ```
 
-They contain a Namespace, a ConfigMap, a Secret (generated from the git-ignored `secret.env`), a Deployment with 2 replicas, a Service, a PodDisruptionBudget, a HorizontalPodAutoscaler (2 to 6 pods), Ingress rules for `/ws/customer` and `/api/chat`, and the topic-creation Job.
+Chat Service has a ConfigMap of its own settings, a Deployment with 2 replicas, a Service, a PodDisruptionBudget and a HorizontalPodAutoscaler (2 to 6 pods). The namespace, shared configuration, secret, topic-creation Job and the single Ingress (to the gateway) are shared with the other services.
 
 The Deployment uses readiness (`/ready`), liveness (`/health`) and startup probes, CPU and memory requests and limits, a non-root read-only container, a `RollingUpdate` strategy with `maxUnavailable: 0` and `maxSurge: 1`, a PodDisruptionBudget, `terminationGracePeriodSeconds: 45`, and graceful shutdown: the `preStop` hook drains the pod (readiness fails), waits for endpoints to drop it, then on SIGTERM the pod sends `server_draining`, closes customer sockets with code `1012`, finishes its in-flight Kafka records and leaves the consumer group. The Service has no session affinity: any pod can resume any conversation from Redis, Kafka and PostgreSQL. Kafka, Redis Cluster and PostgreSQL are expected to be installed separately (for example through operators); their addresses are in the ConfigMap.
 
@@ -683,4 +684,188 @@ The e2e tests, the network-partition script and the Kubernetes rolling-update sc
 - Every pod reads every message on `chat.replies.delivery`. That is simple and fine for this scale; very large deployments would route by conversation instead.
 - Virtual agents publish each reply to both `chat.messages` (the support-chat flow) and `agent.responses` (this log), so a reply exists in two logs with the same `message_id` and independent sequence numbers.
 - Customer messages on `/ws` are published to `chat.messages`, and the agent orchestrator consumes that topic. Customer messages on `/ws/customer` are stored in this log only. Forwarding them to the orchestrator is future work, listed under Implementation status.
-- The Chat Service manifests assume Kafka, Redis Cluster, and PostgreSQL are already installed in a cluster. No other service has a manifest, and this repository does not deploy the platform to a cloud.
+- The Kubernetes manifests assume Kafka, Redis Cluster, and PostgreSQL are already installed (or use the single-node ones in `overlays/kind`). This repository does not deploy the platform to a cloud.
+
+---
+
+## Horizontal scaling
+
+Many customers at once: Kafka carries the work, several replicas of each virtual agent take it from shared consumer groups, and several Chat Service replicas hold the customers' WebSockets. Any chat replica can serve any conversation (no sticky sessions), so replicas can be added or removed at any time.
+
+```text
+customers ─► gateway (2+) ─► chat-service (2–6) ─► chat.messages ─► agent-orchestrator (2–6)
+                 │                 ▲                                    │
+                 │                 │ replies (keyed by conversation)    ▼
+                 │                 └──── va-<agent> (2–10 each) ◄── chat.agent-tasks.<agent>
+                 └─► human-agent (2–4), notification (2–6), analytics (2–6)
+```
+
+### What was tested, and where
+
+| Claim | Evidence | Where it ran |
+|---|---|---|
+| Replicas of one agent share a consumer group; each task is processed by one replica; work is spread; a conversation stays in order | `libs/common/tests/test_consumer_groups.py`, `services/virtual-agent-service/tests/test_scaling_load.py` | In process (real worker and consumer code, in-memory Kafka that splits partitions between group members) |
+| A crashed worker loses no task | Same tests: the crashed replica's uncommitted tasks are redelivered to the others and answered once | In process |
+| 50 concurrent customers handled by replicated workers | `test_scaling_load.py` (report below) | In process |
+| Chat failover, replay, session recovery, ordering, duplicates | `services/chat-service/tests/` (handover, fencing, replay suites), unchanged and passing | In process; PostgreSQL 16 for the database tests |
+| Manifests: replicas, probes, HPAs, PDBs, KEDA, network policy, no session affinity, per-service databases | `tests/test_k8s_scaling.py`, `services/chat-service/tests/test_k8s_manifests.py` (render with `kubectl kustomize`, then check) | Offline render, no cluster |
+| Load test against a running stack | `scripts/load/load_test.py`, `scripts/load/k6-chat.js` (smoke-tested in `scripts/tests/test_load_test.py` against a fake server) | **Not run against EngageHub here** |
+| Autoscaling on a cluster, KEDA, kind, cloud | `scripts/k8s/kind_up.sh`, `scripts/k8s/scaling_demo.sh`, `deploy/k8s/overlays/*` | **Not run here** |
+
+The machine used for this work had under 1 GB of free disk, so Docker, kind and the real-stack load test could not be started. The cloud overlay is a template; nothing has been deployed to a cloud.
+
+### Replica strategy
+
+| Service | Initial replicas | Autoscaling | Why it can scale |
+|---|---|---|---|
+| api-gateway | 2 | HPA 2–6 (CPU, memory) | Stateless NGINX; resolves upstreams per request |
+| chat-service | 2 | HPA 2–6 | Session snapshot and cursor in Redis, log in PostgreSQL, session state on Kafka; handover and fencing between pods |
+| agent-orchestrator | 2 | HPA 2–6 | Shared group `agent-orchestrator` on `chat.messages` |
+| virtual agents (8 Deployments) | 2 each | HPA 2–10, or KEDA on Kafka lag | Shared group `va-<agent_type>` per agent |
+| human-agent-service | 2 | HPA 2–4 | Shared group `human-agent-queue`; queue changes take a per-tenant PostgreSQL advisory lock |
+| notification-service | 2 | HPA 2–6 | Shared group; the event ID is the primary key |
+| analytics-service | 2 | HPA 2–6 | Shared group; counters and the processed-event row in one transaction |
+| supporting services (auth, tenant, customer, product, order, session, audit, frontend) | 1–2 | none | Needed by the scaled tier; not the subject of this work |
+
+All Deployments use rolling updates with `maxUnavailable: 0`, readiness, liveness and startup probes, CPU and memory requests and limits, a `preStop` pause (Chat Service also drains) and a termination grace period. Each scaled Deployment has a PodDisruptionBudget (`minAvailable: 1`). HPAs scale up by at most 2 pods a minute and down by 1 pod every 2 minutes after a 5-minute window: removing a chat pod forces reconnects, removing a worker forces a rebalance.
+
+### Kafka consumer-group strategy
+
+| Consumer | Group | Topics | Partitions |
+|---|---|---|---|
+| Virtual agent `<type>` (all replicas) | `va-<type>`, for example `va-product_advisor` | `chat.agent-tasks.<type>` | 12 |
+| Supervisor (all replicas) | `va-supervisor-escalations` | `chat.escalations` | 6 |
+| Agent orchestrator | `agent-orchestrator` | `chat.messages` | 12 |
+| Human agent service | `human-agent-queue` | `chat.escalations` | 6 |
+| Notification / analytics / audit | `notification-service` / `analytics-service` / `audit-service` | their topics | 6 |
+| Chat Service reply log | `chat-replies-consumer`, `chat-agent-responses-consumer` | `chat.replies`, `agent.responses` | 12 |
+| Chat Service fan-out and session table | no group (every pod reads everything) | `chat.messages`, `chat.replies.delivery`, `chat.session-state`, … | — |
+
+- Every message that needs ordering is keyed by `conversation_id`, so one conversation is on one partition and handled by one replica at a time, in order.
+- Kafka gives each partition to one member of a group: a task is processed by one replica. A group uses at most as many replicas as the topic has partitions, so the agent-task topics have 12 partitions (above the autoscaler maximum of 10). Topics created before this change keep their partition count; add partitions with `kafka-topics.sh --alter --partitions 12` only when the topic is empty, because adding partitions changes which partition a key maps to.
+- The group and topic names are unchanged from before. The spec's examples (`product-advisor-workers`, `chat.agent-tasks.product`) were not adopted, because renaming a live consumer group would make it re-read every retained task.
+- Offsets are committed after a task is handled. If a replica dies, its partitions move to the survivors, which resume from the last commit, so tasks in flight are processed again. The reply's idempotency key turns that into one reply. In the load test this happened to 20–26 tasks per run, with no duplicate replies and nothing lost.
+
+### Autoscaling: HPA and KEDA
+
+- **Default (`kubectl apply -k deploy/k8s`):** HPAs on CPU (70%) and memory (80%) for every scaled service. This needs metrics-server.
+- **KEDA (`kubectl apply -k deploy/k8s/overlays/keda`):** for the virtual agents, CPU is a weak signal (most time is spent waiting on other services). The overlay replaces their HPAs with KEDA ScaledObjects that read the real lag of `va-<type>` on `chat.agent-tasks.<type>`: about one replica per 20 pending tasks, 2 to 10 replicas, plus a CPU trigger. KEDA creates its own HPA, so the overlay deletes the CPU HPA for those Deployments. Other services keep their HPAs.
+- No custom metric is invented. The in-process lag gauge `engagehub_kafka_consumer_lag` (from each consumer) and kafka-exporter's `kafka_consumergroup_lag` are for dashboards; KEDA reads lag from Kafka itself.
+
+### Kubernetes layout
+
+```text
+deploy/k8s/
+  kustomization.yaml          # kubectl apply -k deploy/k8s
+  platform/                   # everything in namespace engagehub; the overlays build on this
+  base/                       # namespace, engagehub-config, engagehub-secrets (from secret.env),
+                              # service account, network policies, kafka-topics Job
+  api-gateway/  chat-service/  agent-orchestrator/  human-agent-service/
+  notification-service/  analytics-service/
+  virtual-agent-service/      # 8 Deployments + HPAs + PDBs, one per agent type
+  supporting-services/        # auth, tenant, customer, product, order, session, audit, frontend
+  overlays/keda/              # Kafka-lag ScaledObjects for the agents
+  overlays/kind/              # + single-node Kafka (KRaft), Redis and PostgreSQL for a laptop
+  overlays/cloud/             # template: registry images, TLS Ingress, managed data stores, KEDA
+```
+
+- Kafka, Redis Cluster and PostgreSQL are external dependencies. Set their addresses in `base/configmap.yaml` (or use `overlays/kind`).
+- Each service's `DATABASE_URL` is assembled in the Pod from the shared secret (`$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST)`) and its own database name. No URL is stored in a ConfigMap.
+- In Kubernetes the gateway gets `UPSTREAM_SUFFIX=.engagehub.svc.cluster.local`, because nginx's resolver does not apply DNS search domains. In Compose the suffix is empty.
+- Network policy: deny ingress by default, allow traffic within the namespace, allow the gateway from anywhere (it is behind the Ingress) and port 8000 from a `monitoring` namespace (Prometheus).
+- Cloud readiness (template, not deployed): environment-based service URLs, an Ingress with TLS via cert-manager, registry image names, a Secret template, a service account without an API token, probes, rolling updates, PDBs and autoscaling.
+
+### Local setup
+
+Docker Compose stays the local development environment, and is unchanged: `docker compose up --build -d`. To scale a worker in Compose (replicas join the same consumer group): `docker compose up -d --scale va-faq=3`.
+
+Local Kubernetes with kind (needs about 8 GB of memory for Docker and 15 GB of disk; not run here):
+
+```bash
+scripts/k8s/kind_up.sh            # kind cluster, images, metrics-server, overlays/kind
+KEDA=1 scripts/k8s/kind_up.sh     # the same with KEDA and Kafka-lag scaling for the agents
+kubectl get pods -n engagehub
+kubectl get hpa -n engagehub
+kubectl -n engagehub port-forward svc/api-gateway 18080:8080
+```
+
+### Load testing
+
+Against a running stack (Compose or Kubernetes), through the gateway:
+
+```bash
+pip install -r scripts/requirements.txt
+python scripts/load/load_test.py --customers 50 --duration 120 --prometheus http://localhost:19090
+python scripts/load/load_test.py --customers 50 --kubectl-namespace engagehub    # adds replica and HPA counts
+k6 run -e GATEWAY=http://localhost:18080 scripts/load/k6-chat.js                 # k6 alternative
+```
+
+Each simulated customer registers, opens a conversation and chats on `/ws`: product, order and FAQ questions and requests for a human; some reconnect mid-conversation. The report gives requests per second, average and p95 latency of the server's ack and of the agent's reply, error rate, reconnects and recovery time, duplicates shown, and (with `--prometheus`) consumer lag and the number of replicas of each agent that processed tasks, which is the evidence that replicas work in parallel.
+
+In-process load test, which ran for this work (real worker, sequencing and consumer code; in-memory Kafka; not a measure of network or broker throughput):
+
+```bash
+cd services/virtual-agent-service && ../../.venv/bin/python -m pytest tests/test_scaling_load.py -s
+```
+
+```text
+In-process load test (real worker code, in-memory Kafka with consumer-group balancing)
+  customers: 50, messages: 200 (195 agent tasks, 5 escalations)
+  elapsed: 0.52 s, throughput: 386 tasks/s
+  reply latency: avg 203.1 ms, p95 351.5 ms, max 448.7 ms
+  events handled per replica: {'faq-1': 30, 'faq-2': 24, 'order-tracking-1': 38, 'order-tracking-2': 25,
+    'product-advisor-1': 15, 'product-advisor-2': 43, 'product-advisor-3': 45, 'supervisor-1': 6, 'supervisor-2': 4}
+  tasks per agent type (metric): {'product_advisor': 103.0, 'order_tracking': 63.0, 'faq': 54.0}
+  crashed replica: product-advisor-1; tasks processed more than once during the crash and rebalance: 25
+    (absorbed by idempotency keys); duplicate reply records: 0; tasks lost: 0
+```
+
+Every replica of every agent type processed tasks. `product-advisor-1` was killed mid-run without committing; its tasks were redelivered and answered once. Each backend call is simulated as a 10 ms request.
+
+### Horizontal-scaling demonstration
+
+`scripts/k8s/scaling_demo.sh` walks through the 16 steps on a cluster prepared by `kind_up.sh`. It has not been run here. Useful commands while it runs:
+
+```bash
+kubectl get pods -n engagehub -w
+kubectl get hpa -n engagehub
+kubectl get scaledobjects -n engagehub
+kubectl describe hpa va-product-advisor -n engagehub
+kubectl logs -n engagehub deployment/va-product-advisor | grep "agent task processed"
+```
+
+1–3. The cluster runs; every scaled Deployment shows 2 ready replicas and its HPA or ScaledObject.
+4. The load test starts with 50 customers.
+5–6. `engagehub_kafka_consumer_lag` for `va-*` rises. KEDA, or the HPA once CPU rises, adds agent replicas.
+7. "agent task processed" log lines appear on several pods of each agent, and the Grafana panel *Agent tasks per second, by replica* shows one line per pod.
+8–9. One `va-product-advisor` pod is deleted. The group rebalances, and the remaining pods take its partitions and redo its uncommitted tasks.
+10–14. One `chat-service` pod is deleted. Its customers reconnect through the gateway to another pod, which claims their sessions (`handover completed` in the logs) and replays unacknowledged messages from PostgreSQL in order. The load report shows reconnects and `duplicates_shown: 0`.
+15–16. The load test ends, lag drains, and after the 5-minute scale-down window the agents return to 2 replicas.
+
+### Metrics and dashboards
+
+| Metric | Labels |
+|---|---|
+| `engagehub_active_websocket_connections` | `endpoint` |
+| `engagehub_kafka_consumer_lag` | `group`, `topic`, `partition` |
+| `engagehub_agent_tasks_received_total` | `agent_type` |
+| `engagehub_agent_tasks_processed_total` | `agent_type`, `outcome` (`replied`, `escalated`, `degraded`, `skipped`) |
+| `engagehub_agent_tasks_failed_total` | `agent_type`, `reason` (exception class); counts attempts, before retry or dead-lettering |
+| `engagehub_agent_processing_seconds` | `agent_type` |
+| `engagehub_queue_depth` | `queue` (`human_agents`), `tenant` |
+| `engagehub_handovers_total` | `reason` (the spec's `engagehub_handover_total`; the existing name is kept) |
+| `engagehub_recovery_seconds`, `engagehub_messages_replayed_total` | —, `source` |
+
+Prometheus adds `job` and `instance` (the service and the replica). No metric is labelled with a customer or conversation ID.
+
+Grafana dashboard **EngageHub Horizontal Scaling** (`deploy/grafana/dashboards/engagehub-scaling.json`) shows running replicas per service, consumer lag by group, tasks per agent type and per replica, task processing time, failed tasks, queue depth, active sockets, handovers and recovery time. The *Ready replicas* and *HPA desired vs current* panels need kube-state-metrics, so they are empty under Docker Compose.
+
+### Known limitations
+
+- The real-stack load test, the kind workflow, KEDA and the cloud overlay have not been run; only the in-process load test and the offline manifest checks have.
+- A consumer group cannot use more replicas than its topic has partitions. Existing Compose volumes keep 6 partitions per agent topic, so more than 6 replicas of one agent would idle there.
+- A replica that dies after handling tasks but before committing causes those tasks to be processed again by another replica (at-least-once). Replies are deduplicated by idempotency key; any non-idempotent side effect in a new agent must be made idempotent too.
+- Rebalances pause a group briefly. Aggressive scale-down would cause frequent pauses, hence the 5-minute window.
+- Supporting services run with fixed replica counts and no autoscaling.
+- The kind overlay's Kafka, Redis and PostgreSQL are single-node and not durable; they are for demonstrations only.
+

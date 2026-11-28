@@ -25,6 +25,22 @@ SEQUENCE_CONFLICTS = Counter(
 ROUTING_DECISIONS = Counter("engagehub_routing_decisions_total", "Routing outcomes", ["tenant", "agent", "intent"])
 ESCALATIONS = Counter("engagehub_escalations_total", "Escalations to a human", ["tenant", "reason"])
 HUMAN_QUEUE_DEPTH = Gauge("engagehub_human_queue_depth", "Conversations waiting for a human", ["tenant"])
+QUEUE_DEPTH = Gauge("engagehub_queue_depth", "Items waiting in a work queue", ["queue", "tenant"])
+# Virtual-agent work. Labels are bounded: eight agent types, a few outcomes, error class names.
+AGENT_TASKS_RECEIVED = Counter("engagehub_agent_tasks_received_total", "Agent tasks taken from Kafka", ["agent_type"])
+AGENT_TASKS_PROCESSED = Counter(
+    "engagehub_agent_tasks_processed_total", "Agent tasks completed", ["agent_type", "outcome"]
+)
+AGENT_TASKS_FAILED = Counter(
+    "engagehub_agent_tasks_failed_total", "Agent task attempts that raised (retried or dead-lettered)",
+    ["agent_type", "reason"],
+)  # fmt: skip
+AGENT_PROCESSING_SECONDS = Histogram(
+    "engagehub_agent_processing_seconds",
+    "Time to handle one agent task",
+    ["agent_type"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
 KAFKA_CONSUMER_LAG = Gauge(
     "engagehub_kafka_consumer_lag",
     "Records between the consumer position and the partition high watermark",

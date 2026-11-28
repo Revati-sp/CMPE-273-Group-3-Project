@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from engagehub_common.auth import Principal
 from engagehub_common.events import EventEnvelope, EventType, derive_event_id, sender, utcnow
 from engagehub_common.messaging.bus import Record
-from engagehub_common.metrics import HUMAN_QUEUE_DEPTH
+from engagehub_common.metrics import HUMAN_QUEUE_DEPTH, QUEUE_DEPTH
 from engagehub_common.service import Runtime
 from engagehub_common.session.log import ConversationLog
 from engagehub_common.session.store import (
@@ -172,7 +172,9 @@ class QueueService:
                 continue
             entry.status, entry.offered_to, entry.offered_at = QUEUE_OFFERED, agent.id, utcnow()
             workload[agent.id] = workload.get(agent.id, 0) + 1
-        HUMAN_QUEUE_DEPTH.labels(tenant_id).set(sum(1 for e in waiting if e.status == QUEUE_WAITING))
+        depth = sum(1 for e in waiting if e.status == QUEUE_WAITING)
+        HUMAN_QUEUE_DEPTH.labels(tenant_id).set(depth)
+        QUEUE_DEPTH.labels("human_agents", tenant_id).set(depth)
 
     async def _open_entry(self, session, tenant_id: str, conversation_id: str) -> QueueEntry:
         entry = await session.scalar(

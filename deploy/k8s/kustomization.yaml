@@ -1,0 +1,11 @@
+# EngageHub on Kubernetes: horizontally scaled services. Kafka, Redis Cluster and
+# PostgreSQL are external dependencies (see README "Horizontal scaling" and overlays/kind).
+#
+#   cp deploy/k8s/base/secret.env.example deploy/k8s/base/secret.env   # set real values
+#   kubectl apply -k deploy/k8s                      # CPU and memory HPAs
+#   kubectl apply -k deploy/k8s/overlays/keda        # Kafka-lag autoscaling for agents (needs KEDA)
+#   kubectl apply -k deploy/k8s/overlays/kind        # plus single-node Kafka, Redis, PostgreSQL
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- platform

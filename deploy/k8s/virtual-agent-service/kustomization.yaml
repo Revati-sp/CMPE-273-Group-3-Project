@@ -1,0 +1,12 @@
+# The eight virtual agents. One image, one Deployment, HPA and PDB per agent type.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- va-product-advisor.yaml
+- va-order-tracking.yaml
+- va-returns-refunds.yaml
+- va-billing.yaml
+- va-technical-support.yaml
+- va-faq.yaml
+- va-complaint-management.yaml
+- va-supervisor.yaml

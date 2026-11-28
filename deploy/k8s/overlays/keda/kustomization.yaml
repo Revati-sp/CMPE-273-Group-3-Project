@@ -1,0 +1,16 @@
+# Base plus KEDA ScaledObjects. KEDA creates its own HPA per agent, so the CPU HPAs are removed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+patches:
+- target:
+    kind: HorizontalPodAutoscaler
+    name: va-.*
+  patch: |
+    $patch: delete
+    apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: ignored
+resources:
+- ../../platform
+- scaledobjects.yaml

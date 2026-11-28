@@ -1,0 +1,10 @@
+# Managed Kafka, Redis Cluster and PostgreSQL endpoints. Placeholders: replace before use.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: engagehub-config
+data:
+  KAFKA_BOOTSTRAP_SERVERS: b-1.your-kafka.example.com:9092,b-2.your-kafka.example.com:9092
+  REDIS_NODES: your-redis-cluster.example.com:6379
+  POSTGRES_HOST: your-postgres.example.com
+  OTEL_ENDPOINT: http://otel-collector.observability:4318/v1/traces

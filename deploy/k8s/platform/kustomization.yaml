@@ -1,0 +1,49 @@
+# Everything in the engagehub namespace. Overlays build on this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: engagehub
+labels:
+- pairs:
+    app.kubernetes.io/part-of: engagehub
+  includeSelectors: false
+images:
+- name: engagehub/api-gateway
+  newTag: local
+- name: engagehub/frontend
+  newTag: local
+- name: engagehub/chat-service
+  newTag: local
+- name: engagehub/agent-orchestrator
+  newTag: local
+- name: engagehub/virtual-agent-service
+  newTag: local
+- name: engagehub/human-agent-service
+  newTag: local
+- name: engagehub/notification-service
+  newTag: local
+- name: engagehub/analytics-service
+  newTag: local
+- name: engagehub/auth-service
+  newTag: local
+- name: engagehub/tenant-service
+  newTag: local
+- name: engagehub/customer-service
+  newTag: local
+- name: engagehub/product-service
+  newTag: local
+- name: engagehub/order-service
+  newTag: local
+- name: engagehub/session-service
+  newTag: local
+- name: engagehub/audit-service
+  newTag: local
+resources:
+- ../base
+- ../api-gateway
+- ../chat-service
+- ../agent-orchestrator
+- ../virtual-agent-service
+- ../human-agent-service
+- ../notification-service
+- ../analytics-service
+- ../supporting-services

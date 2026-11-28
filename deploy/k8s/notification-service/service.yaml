@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: notifications
+spec:
+  selector:
+    app.kubernetes.io/name: notification-service
+  ports:
+  - name: http
+    port: 8000
+    targetPort: http

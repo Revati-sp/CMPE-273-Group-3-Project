@@ -1,4 +1,7 @@
-# EngageHub API gateway. ${DNS_RESOLVER} is substituted when the container starts.
+# EngageHub API gateway. ${DNS_RESOLVER} and ${UPSTREAM_SUFFIX} are substituted when the
+# container starts. In Docker Compose the suffix is empty. In Kubernetes it is
+# ".<namespace>.svc.cluster.local": nginx's resolver does not apply DNS search domains,
+# so service names must be fully qualified.
 #
 # Upstreams are resolved at request time through a variable. A service that is down
 # therefore does not stop the gateway from booting, and replicas added or replaced
@@ -18,18 +21,18 @@ map $http_x_correlation_id $correlation_id {
 
 map $api_name $api_upstream {
     default      "";
-    auth         auth-service;
-    tenant       tenant-service;
-    customer     customer-service;
-    chat         chat-service;
-    session      session-service;
-    human        human-agent-service;
-    orchestrator agent-orchestrator;
-    product      product-service;
-    order        order-service;
-    notification notification-service;
-    analytics    analytics-service;
-    audit        audit-service;
+    auth         auth-service${UPSTREAM_SUFFIX};
+    tenant       tenant-service${UPSTREAM_SUFFIX};
+    customer     customer-service${UPSTREAM_SUFFIX};
+    chat         chat-service${UPSTREAM_SUFFIX};
+    session      session-service${UPSTREAM_SUFFIX};
+    human        human-agent-service${UPSTREAM_SUFFIX};
+    orchestrator agent-orchestrator${UPSTREAM_SUFFIX};
+    product      product-service${UPSTREAM_SUFFIX};
+    order        order-service${UPSTREAM_SUFFIX};
+    notification notification-service${UPSTREAM_SUFFIX};
+    analytics    analytics-service${UPSTREAM_SUFFIX};
+    audit        audit-service${UPSTREAM_SUFFIX};
 }
 
 log_format engagehub_json escape=json
@@ -77,7 +80,7 @@ server {
 
     location ~ ^/api/auth/ {
         limit_req zone=auth_limit burst=40 nodelay;
-        set $auth_upstream auth-service;
+        set $auth_upstream auth-service${UPSTREAM_SUFFIX};
         rewrite ^/api/auth/(.*)$ /$1 break;
         proxy_pass http://$auth_upstream:8000;
     }
@@ -93,7 +96,7 @@ server {
 
     location = /ws {
         limit_conn ws_limit 200;
-        set $chat_upstream chat-service;
+        set $chat_upstream chat-service${UPSTREAM_SUFFIX};
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 120s;
@@ -105,7 +108,7 @@ server {
     # conversation, so a reconnect after a pod failure simply lands on a healthy one.
     location ^~ /ws/customer/ {
         limit_conn ws_limit 200;
-        set $chat_upstream chat-service;
+        set $chat_upstream chat-service${UPSTREAM_SUFFIX};
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 120s;
@@ -114,7 +117,7 @@ server {
     }
 
     location / {
-        set $frontend_upstream frontend;
+        set $frontend_upstream frontend${UPSTREAM_SUFFIX};
         proxy_pass http://$frontend_upstream:8081;
     }
 }

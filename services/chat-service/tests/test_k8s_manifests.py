@@ -7,17 +7,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-KUSTOMIZE_DIR = Path(__file__).resolve().parents[3] / "deploy" / "k8s" / "chat-service"
+KUSTOMIZE_DIR = Path(__file__).resolve().parents[3] / "deploy" / "k8s"
 
 
 @pytest.fixture(scope="module")
 def resources():
     if shutil.which("kubectl") is None:
         pytest.skip("kubectl not installed")
-    secret = KUSTOMIZE_DIR / "secret.env"
+    secret = KUSTOMIZE_DIR / "base" / "secret.env"
     created = not secret.exists()
     if created:
-        secret.write_text((KUSTOMIZE_DIR / "secret.env.example").read_text())
+        secret.write_text((KUSTOMIZE_DIR / "base" / "secret.env.example").read_text())
     try:
         rendered = subprocess.run(
             ["kubectl", "kustomize", str(KUSTOMIZE_DIR)], check=True, capture_output=True, text=True
@@ -47,8 +47,9 @@ def test_deployment_is_highly_available_and_drains_gracefully(resources):
     assert container["lifecycle"]["preStop"]
     assert pod["terminationGracePeriodSeconds"] >= 30
     refs = {next(iter(e.values()))["name"] for e in container["envFrom"]}
-    assert "chat-service-config" in refs
-    assert any(name.startswith("chat-service-secrets") for name in refs)
+    assert {"engagehub-config", "chat-service-config", "engagehub-secrets"} <= refs
+    database_url = next(e["value"] for e in container["env"] if e["name"] == "DATABASE_URL")
+    assert database_url.endswith("/eh_chat") and "$(POSTGRES_PASSWORD)" in database_url
 
 
 def test_rolling_update_drains_before_termination(resources):

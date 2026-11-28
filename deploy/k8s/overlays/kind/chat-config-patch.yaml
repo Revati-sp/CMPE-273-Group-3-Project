@@ -1,0 +1,7 @@
+# Lets the load test and demo publish fake replies. Never enable this outside a test cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-service-config
+data:
+  ENABLE_DEV_ENDPOINTS: 'true'

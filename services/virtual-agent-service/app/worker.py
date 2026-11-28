@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from engagehub_common.events import EventEnvelope, EventType, agent_response_event, derive_event_id, sender
 from engagehub_common.llm import LLMProvider
 from engagehub_common.messaging.bus import EventProducer, Record
+from engagehub_common.metrics import (
+    AGENT_PROCESSING_SECONDS,
+    AGENT_TASKS_FAILED,
+    AGENT_TASKS_PROCESSED,
+    AGENT_TASKS_RECEIVED,
+)
 from engagehub_common.service import Runtime
 from engagehub_common.session.history import HistoryClient, HistoryUnavailable
 from engagehub_common.session.log import ConversationLog
@@ -39,13 +46,29 @@ class AgentWorker:
         self.service = runtime.settings.service_name
         self.log = ConversationLog(store, producer, self.service, restore=history.restore_session)
 
-    async def handle_task(self, event: EventEnvelope, _record: Record) -> None:
+    async def handle_task(self, event: EventEnvelope, record: Record) -> None:
         if event.event_type != EventType.AGENT_TASK:
             return
+        agent_type = self.agent.agent_type
+        AGENT_TASKS_RECEIVED.labels(agent_type).inc()
+        started = time.perf_counter()
+        try:
+            outcome = await self._handle_task(event, record)
+        except Exception as exc:
+            # Counted per attempt: the consumer runner retries, then dead-letters.
+            AGENT_TASKS_FAILED.labels(agent_type, type(exc).__name__).inc()
+            raise
+        finally:
+            AGENT_PROCESSING_SECONDS.labels(agent_type).observe(time.perf_counter() - started)
+        AGENT_TASKS_PROCESSED.labels(agent_type, outcome).inc()
+        log.info("agent task processed", extra={"agent_type": agent_type, "outcome": outcome,
+                                                "instance": self.runtime.settings.pod_name})  # fmt: skip
+
+    async def _handle_task(self, event: EventEnvelope, _record: Record) -> str:
         state = await self.store.get(event.tenant_id, event.conversation_id)
         if state is not None and state.workflow_state != WORKFLOW_VIRTUAL:
             log.info("skipping stale task: conversation has moved on")
-            return
+            return "skipped"
         task = AgentTask(
             tenant_id=event.tenant_id,
             customer_id=event.customer_id,
@@ -53,15 +76,20 @@ class AgentWorker:
             source_message_id=event.payload["source_message_id"],
             language=event.payload.get("language", "en"),
         )
+        outcome = "replied"
         try:
             reply = await self.agent.respond(task)
         except DependencyUnavailable as exc:
             log.warning("agent dependency unavailable", extra={"error": str(exc)})
+            outcome = "degraded"
             reply = AgentReply(
                 "I'm having trouble reaching our systems right now, so I'm connecting you with a person.",
                 escalate_reason="dependency_unavailable",
             )
         await self._post_reply(event, reply)
+        if reply.escalate_reason and outcome == "replied":
+            outcome = "escalated"
+        return outcome
 
     async def _post_reply(self, event: EventEnvelope, reply: AgentReply) -> None:
         # The key is derived from the source message, so a redelivered task reuses the same reply.

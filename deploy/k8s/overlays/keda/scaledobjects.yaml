@@ -1,0 +1,283 @@
+# Kafka-lag autoscaling for the virtual agents (KEDA 2.x must be installed).
+# KEDA reads the consumer group's real lag on its task topic: about one replica per 20
+# pending tasks, between 2 and 10. Replicas beyond the topic's partition count would be
+# idle (allowIdleConsumers: false caps them), so agent topics have 12 partitions.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-product-advisor
+spec:
+  scaleTargetRef:
+    name: va-product-advisor
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-product_advisor
+      topic: chat.agent-tasks.product_advisor
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-order-tracking
+spec:
+  scaleTargetRef:
+    name: va-order-tracking
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-order_tracking
+      topic: chat.agent-tasks.order_tracking
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-returns-refunds
+spec:
+  scaleTargetRef:
+    name: va-returns-refunds
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-returns_refunds
+      topic: chat.agent-tasks.returns_refunds
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-billing
+spec:
+  scaleTargetRef:
+    name: va-billing
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-billing
+      topic: chat.agent-tasks.billing
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-technical-support
+spec:
+  scaleTargetRef:
+    name: va-technical-support
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-technical_support
+      topic: chat.agent-tasks.technical_support
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-faq
+spec:
+  scaleTargetRef:
+    name: va-faq
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-faq
+      topic: chat.agent-tasks.faq
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-complaint-management
+spec:
+  scaleTargetRef:
+    name: va-complaint-management
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-complaint_management
+      topic: chat.agent-tasks.complaint_management
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: va-supervisor
+spec:
+  scaleTargetRef:
+    name: va-supervisor
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 120
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServersFromEnv: KAFKA_BOOTSTRAP_SERVERS
+      consumerGroup: va-supervisor
+      topic: chat.agent-tasks.supervisor
+      lagThreshold: '20'
+      activationLagThreshold: '5'
+      offsetResetPolicy: earliest
+      allowIdleConsumers: 'false'
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: '70'

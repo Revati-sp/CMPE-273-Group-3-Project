@@ -1,0 +1,78 @@
+# NGINX routes /api/<service>/ and the WebSockets. The upstreams are fully qualified (UPSTREAM_SUFFIX).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels: &id001
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels: *id001
+    spec:
+      serviceAccountName: engagehub-workload
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: api-gateway
+      containers:
+      - name: api-gateway
+        image: engagehub/api-gateway
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: DNS_RESOLVER
+          value: kube-dns.kube-system.svc.cluster.local
+        - name: UPSTREAM_SUFFIX
+          value: .engagehub.svc.cluster.local
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 2
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 5
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - sleep 5 && nginx -s quit
+        securityContext:
+          allowPrivilegeEscalation: false
+      volumes: []

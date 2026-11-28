@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: engagehub-config
+data:
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_REPLICATION_FACTOR: '1'
+  KAFKA_MIN_INSYNC_REPLICAS: '1'
+  REDIS_MODE: standalone
+  REDIS_NODES: redis:6379
+  POSTGRES_HOST: postgres
+  SEED_DEMO_DATA: 'true'
+  OTEL_ENABLED: 'false'

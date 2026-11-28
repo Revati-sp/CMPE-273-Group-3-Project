@@ -1,0 +1,33 @@
+# Creates every topic (including the compacted chat.session-state). Idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: engagehub-workload
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+      - name: provision
+        image: engagehub/chat-service
+        command:
+        - python
+        - -m
+        - engagehub_common.messaging.provision
+        envFrom:
+        - configMapRef:
+            name: engagehub-config
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi

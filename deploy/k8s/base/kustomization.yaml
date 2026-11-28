@@ -1,0 +1,15 @@
+# Shared by every service: namespace, configuration, secrets, identity, network policy.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+secretGenerator:
+- name: engagehub-secrets
+  envs:
+  - secret.env
+generatorOptions:
+  disableNameSuffixHash: true
+resources:
+- namespace.yaml
+- configmap.yaml
+- serviceaccount.yaml
+- networkpolicy.yaml
+- kafka-topics-job.yaml

@@ -1,0 +1,24 @@
+# External endpoints. Change these to match your Kafka, Redis Cluster and PostgreSQL.
+# Service-to-service URLs use short names: the services share this namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: engagehub-config
+data:
+  LOG_LEVEL: INFO
+  KAFKA_BOOTSTRAP_SERVERS: kafka-0.kafka-headless:9092,kafka-1.kafka-headless:9092,kafka-2.kafka-headless:9092
+  KAFKA_REPLICATION_FACTOR: '3'
+  KAFKA_MIN_INSYNC_REPLICAS: '2'
+  REDIS_MODE: cluster
+  REDIS_NODES: redis-cluster-0.redis-cluster-headless:6379,redis-cluster-1.redis-cluster-headless:6379,redis-cluster-2.redis-cluster-headless:6379
+  POSTGRES_HOST: postgres
+  OTEL_ENABLED: 'true'
+  OTEL_ENDPOINT: http://jaeger-collector:4318/v1/traces
+  SEED_DEMO_DATA: 'false'
+  LLM_PROVIDER: rules
+  SESSION_GRPC_TARGET: session-service:50051
+  SESSION_SERVICE_URL: http://session-service:8000
+  PRODUCT_SERVICE_URL: http://product-service:8000
+  ORDER_SERVICE_URL: http://order-service:8000
+  CUSTOMER_SERVICE_URL: http://customer-service:8000
+  TENANT_SERVICE_URL: http://tenant-service:8000

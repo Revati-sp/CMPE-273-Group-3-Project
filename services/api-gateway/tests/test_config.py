@@ -9,7 +9,7 @@ SERVICES = pathlib.Path(__file__).parents[2]
 
 def test_every_route_points_at_an_existing_service():
     block = re.search(r"map \$api_name \$api_upstream \{(.*?)\n\}", CONFIG, re.S).group(1)
-    routes = dict(re.findall(r"^\s+([a-z]+)\s+([a-z-]+);", block, re.M))
+    routes = dict(re.findall(r"^\s+([a-z]+)\s+([a-z-]+)\$\{UPSTREAM_SUFFIX\};", block, re.M))
     assert len(routes) == 12
     for service in routes.values():
         assert (SERVICES / service / "Dockerfile").exists(), service
@@ -31,7 +31,7 @@ def test_internal_endpoints_are_not_exposed():
 
 def test_customer_reply_stream_socket_is_proxied_with_upgrade():
     block = CONFIG[CONFIG.index("location ^~ /ws/customer/") :]
-    block = block[: block.index("}")]
+    block = block[: block.index("\n    }")]
     assert "proxy_set_header Upgrade $http_upgrade" in block and "chat-service" in block
 
 
@@ -43,3 +43,11 @@ def test_correlation_id_is_generated_and_forwarded():
 def test_upstreams_resolve_at_request_time():
     assert "resolver ${DNS_RESOLVER}" in CONFIG
     assert re.findall(r"proxy_pass\s+http://[a-z]", CONFIG) == []
+
+
+def test_every_upstream_name_takes_the_namespace_suffix():
+    """Kubernetes needs fully qualified names; Compose sets the suffix to an empty string."""
+    for name in re.findall(r"set \$[a-z_]+_upstream ([^;]+);", CONFIG):
+        assert name.endswith("${UPSTREAM_SUFFIX}"), name
+    dockerfile = (pathlib.Path(__file__).parent.parent / "Dockerfile").read_text()
+    assert 'UPSTREAM_SUFFIX=""' in dockerfile
